@@ -14,8 +14,8 @@ class ClassPassScraper(BaseScraper):
         search_query = f"{city}, {state}"
 
         print(f"  [classpass] Navigating to ClassPass search...")
-        page.goto("https://classpass.com/search", wait_until="domcontentloaded", timeout=45000)
-        page.wait_for_timeout(4000)
+        page.goto("https://classpass.com/search", wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(6000)
 
         # Dismiss cookie consent banner (blocks clicks if present)
         self._dismiss_consent(page)
@@ -51,12 +51,39 @@ class ClassPassScraper(BaseScraper):
 
     def _set_location(self, page: Page, search_query: str):
         """Type city into the location search input and select from autocomplete."""
-        location_input = page.query_selector('input[placeholder="City, neighborhood"]')
+        # Wait for page to fully settle before hunting for inputs
+        try:
+            page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception:
+            pass
+        page.wait_for_timeout(2000)
+
+        SELECTORS = [
+            'input[placeholder="City, neighborhood"]',
+            'input[placeholder*="City"]',
+            'input[placeholder*="city"]',
+            'input[placeholder*="location" i]',
+            'input[placeholder*="neighborhood" i]',
+            'input[aria-label*="location" i]',
+            'input[aria-label*="city" i]',
+            'input[name*="location" i]',
+            'input[data-qa*="location" i]',
+            '[data-testid*="location"] input',
+            '[data-testid*="search"] input[type="text"]',
+        ]
+
+        location_input = None
+        for sel in SELECTORS:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                location_input = el
+                break
+
+        # Last resort: first visible text input on the page
         if not location_input:
-            for sel in ('input[placeholder*="City"]', 'input[placeholder*="city"]',
-                        'input[placeholder*="location" i]'):
-                location_input = page.query_selector(sel)
-                if location_input:
+            for el in page.query_selector_all('input[type="text"]'):
+                if el.is_visible():
+                    location_input = el
                     break
 
         if not location_input:
