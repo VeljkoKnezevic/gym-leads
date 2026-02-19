@@ -11,17 +11,21 @@ class ClassPassScraper(BaseScraper):
     def _scrape(self, page: Page) -> list[Lead]:
         city = self.geo["city"]
         state = self.geo["state"]
-        search_query = f"{city}, {state}"
 
-        print(f"  [classpass] Navigating to ClassPass search...")
-        page.goto("https://classpass.com/search", wait_until="domcontentloaded", timeout=60000)
+        # Build direct ClassPass URL from geo slug.
+        # geo["slug"] is e.g. "bozeman-mt" or "fort-wayne-in".
+        # ClassPass uses "bozeman--mt" / "fort-wayne--in" (double-dash before state).
+        slug = self.geo["slug"]
+        city_part, state_part = slug.rsplit("-", 1)
+        classpass_slug = f"{city_part}--{state_part}"
+        url = f"https://classpass.com/classes/{classpass_slug}"
+
+        print(f"  [classpass] Navigating to: {url}")
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(6000)
 
         # Dismiss cookie consent banner (blocks clicks if present)
         self._dismiss_consent(page)
-
-        # Set the location via the search input
-        self._set_location(page, search_query)
 
         # Scroll to load more venue cards
         for i in range(4):
@@ -48,64 +52,6 @@ class ClassPassScraper(BaseScraper):
                 page.wait_for_timeout(3000)
         except Exception:
             page.wait_for_timeout(3000)
-
-    def _set_location(self, page: Page, search_query: str):
-        """Type city into the location search input and select from autocomplete."""
-        # Wait for page to fully settle before hunting for inputs
-        try:
-            page.wait_for_load_state("networkidle", timeout=20000)
-        except Exception:
-            pass
-        page.wait_for_timeout(2000)
-
-        SELECTORS = [
-            'input[placeholder="City, neighborhood"]',
-            'input[placeholder*="City"]',
-            'input[placeholder*="city"]',
-            'input[placeholder*="location" i]',
-            'input[placeholder*="neighborhood" i]',
-            'input[aria-label*="location" i]',
-            'input[aria-label*="city" i]',
-            'input[name*="location" i]',
-            'input[data-qa*="location" i]',
-            '[data-testid*="location"] input',
-            '[data-testid*="search"] input[type="text"]',
-        ]
-
-        location_input = None
-        for sel in SELECTORS:
-            el = page.query_selector(sel)
-            if el and el.is_visible():
-                location_input = el
-                break
-
-        # Last resort: first visible text input on the page
-        if not location_input:
-            for el in page.query_selector_all('input[type="text"]'):
-                if el.is_visible():
-                    location_input = el
-                    break
-
-        if not location_input:
-            print("  [classpass] Could not find location input")
-            return
-
-        print(f"  [classpass] Setting location to: {search_query}")
-        location_input.click(timeout=5000)
-        page.wait_for_timeout(500)
-        location_input.fill("")
-        location_input.type(search_query, delay=80)
-        page.wait_for_timeout(3000)
-
-        # Click the first autocomplete suggestion
-        suggestions = page.query_selector_all("[role=option]")
-        if suggestions:
-            suggestions[0].click()
-            print("  [classpass] Selected autocomplete suggestion")
-            page.wait_for_timeout(8000)
-        else:
-            page.keyboard.press("Enter")
-            page.wait_for_timeout(6000)
 
     def _scrape_venue_cards(self, page: Page, city: str, state: str) -> list[Lead]:
         """Scrape venue data from VenueItem cards in the DOM."""
