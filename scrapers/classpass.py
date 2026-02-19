@@ -11,7 +11,6 @@ class ClassPassScraper(BaseScraper):
     def _scrape(self, page: Page) -> list[Lead]:
         city = self.geo["city"]
         state = self.geo["state"]
-        search_query = f"{city}, {state}"
 
         print(f"  [classpass] Navigating to ClassPass search...")
         page.goto("https://classpass.com/search", wait_until="domcontentloaded", timeout=45000)
@@ -21,7 +20,10 @@ class ClassPassScraper(BaseScraper):
         self._dismiss_consent(page)
 
         # Set the location via the search input
-        self._set_location(page, search_query)
+        found = self._set_location(page, city)
+        if not found:
+            print(f"  [classpass] Found 0 leads")
+            return []
 
         # Scroll to load more venue cards
         for i in range(4):
@@ -49,36 +51,66 @@ class ClassPassScraper(BaseScraper):
         except Exception:
             page.wait_for_timeout(3000)
 
-    def _set_location(self, page: Page, search_query: str):
-        """Type city into the location search input and select from autocomplete."""
-        location_input = page.query_selector('input[placeholder="City, neighborhood"]')
-        if not location_input:
-            for sel in ('input[placeholder*="City"]', 'input[placeholder*="city"]',
-                        'input[placeholder*="location" i]'):
-                location_input = page.query_selector(sel)
-                if location_input:
+    def _set_location(self, page: Page, city_name: str) -> bool:
+        """Find the location input, type city, click suggestion. Returns True on success."""
+        # ClassPass is a React SPA — wait for any input to appear after JS boots
+        try:
+            page.wait_for_selector("input", timeout=15000)
+        except Exception:
+            pass
+        page.wait_for_timeout(1000)
+
+        SELECTORS = [
+            '[role="searchbox"]',
+            '[role="combobox"]',
+            'input[placeholder*="City" i]',
+            'input[placeholder*="location" i]',
+            'input[placeholder*="neighborhood" i]',
+            'input[placeholder*="search" i]',
+            'input[type="search"]',
+            'input[type="text"]',
+            'input',
+        ]
+
+        search_input = None
+        for sel in SELECTORS:
+            try:
+                el = page.locator(sel).first
+                if el.is_visible(timeout=2000):
+                    search_input = el
                     break
+            except Exception:
+                continue
 
-        if not location_input:
+        if not search_input:
             print("  [classpass] Could not find location input")
-            return
+            return False
 
-        print(f"  [classpass] Setting location to: {search_query}")
-        location_input.click(timeout=5000)
+        print(f"  [classpass] Setting location to: {city_name}")
+        search_input.click()
         page.wait_for_timeout(500)
-        location_input.fill("")
-        location_input.type(search_query, delay=80)
+        search_input.fill("")
+        search_input.type(city_name, delay=80)
         page.wait_for_timeout(3000)
 
-        # Click the first autocomplete suggestion
-        suggestions = page.query_selector_all("[role=option]")
-        if suggestions:
-            suggestions[0].click()
-            print("  [classpass] Selected autocomplete suggestion")
-            page.wait_for_timeout(8000)
-        else:
-            page.keyboard.press("Enter")
-            page.wait_for_timeout(6000)
+        # Wait for autocomplete suggestions then click the first one
+        try:
+            page.wait_for_selector("[role=option]", timeout=5000)
+            suggestions = page.query_selector_all("[role=option]")
+            if suggestions:
+                with page.expect_navigation(wait_until="domcontentloaded", timeout=15000):
+                    suggestions[0].click()
+                page.wait_for_timeout(4000)
+                print(f"  [classpass] Navigated to: {page.url}")
+                return True
+        except Exception:
+            pass
+
+        # Fallback: press Enter
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(6000)
+        print(f"  [classpass] URL after Enter: {page.url}")
+        return True
 
     def _scrape_venue_cards(self, page: Page, city: str, state: str) -> list[Lead]:
         """Scrape venue data from VenueItem cards in the DOM."""
