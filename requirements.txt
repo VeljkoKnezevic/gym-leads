@@ -1,0 +1,4 @@
+playwright==1.49.0
+geopy>=2.4.0
+streamlit>=1.32.0
+requests>=2.31.0
