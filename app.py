@@ -14,8 +14,8 @@ st.title("Gym Lead Scraper")
 city = st.text_input("City", placeholder='e.g. "Fort Wayne, IN"')
 sources = st.multiselect(
     "Sources",
-    ["mindbody", "classpass", "crossfit", "google_maps"],
-    default=["mindbody", "classpass", "crossfit", "google_maps"],
+    ["mindbody", "crossfit", "google_maps"],
+    default=["mindbody", "crossfit", "google_maps"],
 )
 
 if st.button("Run Scraper", disabled=not city.strip() or not sources):

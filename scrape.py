@@ -20,11 +20,10 @@ if _env_path.exists():
 from utils.geo import geocode_city
 from utils.dedup import deduplicate
 from utils.csv_writer import write_leads_csv
-from scrapers import MindBodyScraper, ClassPassScraper, CrossFitScraper, SerpApiScraper
+from scrapers import MindBodyScraper, CrossFitScraper, SerpApiScraper
 
 SCRAPER_MAP = {
     "mindbody": MindBodyScraper,
-    "classpass": ClassPassScraper,
     "crossfit": CrossFitScraper,
     "google_maps": SerpApiScraper,
 }
