@@ -1,6 +1,7 @@
 """SerpAPI Google Maps scraper — no browser needed, phone in search response."""
 
 import os
+import time
 
 import requests
 
@@ -48,10 +49,24 @@ class SerpApiScraper(BaseScraper):
                     "start": offset,
                     "api_key": api_key,
                 }
-                resp = requests.get(
-                    SERPAPI_SEARCH_URL, params=params, timeout=15
-                )
-                data = resp.json()
+
+                # Retry this single request up to 3 times before moving on
+                data = None
+                for attempt in range(3):
+                    try:
+                        resp = requests.get(
+                            SERPAPI_SEARCH_URL, params=params, timeout=30
+                        )
+                        data = resp.json()
+                        break
+                    except Exception as e:
+                        wait = 10 * (attempt + 1)
+                        print(f"  [google_maps] '{query}' p{page_num+1} attempt {attempt+1} failed: {e} — waiting {wait}s")
+                        time.sleep(wait)
+
+                if data is None:
+                    print(f"  [google_maps] Skipping '{query}' p{page_num+1} after 3 failures")
+                    break  # skip remaining pages for this query
 
                 results = data.get("local_results", [])
                 if not results:
