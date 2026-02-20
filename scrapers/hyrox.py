@@ -39,22 +39,6 @@ class HyroxScraper(BaseScraper):
         page.goto("https://gyms.elbnetz.cloud/gyms", wait_until="networkidle", timeout=45000)
         page.wait_for_timeout(2000)
 
-        # Set the search radius to maximum (2000km) and max results
-        try:
-            # Select max radius
-            radius_select = page.locator("#wpsl-radius")
-            if radius_select.count() > 0:
-                radius_select.select_option("2000")
-                print("  [hyrox] Set search radius to 2000km")
-
-            # Select max results
-            results_select = page.locator("#wpsl-results")
-            if results_select.count() > 0:
-                results_select.select_option("1000")
-                print("  [hyrox] Set max results to 1000")
-        except Exception as e:
-            print(f"  [hyrox] Could not set search options: {e}")
-
         # Enter the city name in the search field and trigger search
         search_input = page.locator("#wpsl-search-input")
         if search_input.count() > 0:
