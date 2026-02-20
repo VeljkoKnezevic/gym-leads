@@ -36,7 +36,9 @@ def _normalize(name: str) -> str:
     """Normalize a gym name for comparison."""
     name = name.lower().strip()
     # Remove common suffixes/prefixes that don't help matching
-    for word in ("llc", "inc", "the", "gym", "fitness", "studio", "center", "centre"):
+    # Includes brand names (crossfit, hyrox, f45, orangetheory) to catch cross-source dupes
+    for word in ("llc", "inc", "the", "gym", "fitness", "studio", "center", "centre",
+                 "crossfit", "hyrox", "f45", "orangetheory", "training"):
         name = re.sub(rf"\b{word}\b", "", name)
     # Remove trailing location codes like "#0196", "DC.MD.VA", "EM-VA-20005"
     name = re.sub(r"#\w+", "", name)

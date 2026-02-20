@@ -2,6 +2,7 @@
 
 import os
 import time
+from typing import Optional
 
 import requests
 
@@ -95,7 +96,7 @@ class SerpApiScraper(BaseScraper):
         print(f"  [google_maps] Found {len(leads)} leads")
         return leads
 
-    def _parse(self, b: dict) -> Lead | None:
+    def _parse(self, b: dict) -> Optional[Lead]:
         name = b.get("title", "").strip()
         if not name:
             return None
