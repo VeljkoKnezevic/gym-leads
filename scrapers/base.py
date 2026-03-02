@@ -20,12 +20,13 @@ class Lead:
     website: str = ""
     type: str = ""
     source: str = ""
+    owner: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-CSV_COLUMNS = ["name", "address", "city", "state", "phone", "website", "type", "source"]
+CSV_COLUMNS = ["name", "address", "city", "state", "phone", "website", "type", "source", "owner"]
 
 
 def normalize_phone(raw: str) -> str:

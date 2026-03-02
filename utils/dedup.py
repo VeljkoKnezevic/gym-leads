@@ -77,6 +77,7 @@ def _merge_leads(existing: Lead, new: Lead) -> Lead:
         website=existing.website or new.website,
         type=existing.type or new.type,
         source=existing.source,
+        owner=existing.owner or new.owner,
     )
     # Combine sources (e.g., "mindbody, crossfit")
     existing_sources = set(s.strip() for s in existing.source.split(","))
@@ -100,14 +101,14 @@ def deduplicate(leads: list[Lead], threshold: float = 0.85) -> list[Lead]:
 
     for lead in leads:
         norm_name = _normalize(lead.name)
-        lead_city = lead.city.lower().strip()
-        lead_state = _normalize_state(lead.state)
+        lead_city = (lead.city or "").lower().strip()
+        lead_state = _normalize_state(lead.state or "")
 
         matched = False
         for i, existing in enumerate(unique):
             existing_norm = _normalize(existing.name)
-            existing_city = existing.city.lower().strip()
-            existing_state = _normalize_state(existing.state)
+            existing_city = (existing.city or "").lower().strip()
+            existing_state = _normalize_state(existing.state or "")
 
             # Must be same city/state to be a duplicate
             if lead_city != existing_city or lead_state != existing_state:

@@ -31,7 +31,9 @@ if st.button("Run Scraper", disabled=not city.strip() or not sources):
             capture_output=True, text=True, cwd=Path(__file__).parent,
         )
 
-    st.code(result.stdout or result.stderr)
+    st.code(result.stdout)
+    if result.stderr:
+        st.code(result.stderr, language="text")
 
     if result.returncode == 0 and output_path.exists():
         st.success("Done!")
@@ -43,3 +45,4 @@ if st.button("Run Scraper", disabled=not city.strip() or not sources):
         )
     else:
         st.error("Scraper failed — see log above")
+
