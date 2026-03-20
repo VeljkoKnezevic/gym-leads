@@ -10,18 +10,25 @@ from .base import BaseScraper, Lead
 
 SERPAPI_SEARCH_URL = "https://serpapi.com/search"
 
-# Broad queries that cover the full fitness landscape without burning too many
-# of the 250 free-tier searches/month. Each query paginates up to 3 pages
-# (60 results max), so 5 queries = 15 searches per city run (~16 city runs/month).
+# Balanced niche coverage — broad gym queries first, then targeted niches.
+# Martial arts consolidated into one query since "martial arts" already surfaces
+# boxing, kickboxing, BJJ, karate, etc. on Google Maps.
+# 9 queries × 3 pages = 27 API calls per city (~9 city runs/month on free tier).
 GYM_QUERIES = [
-    "gym",
-    "yoga studio",
-    "martial arts",
+    # Broad — these catch the most generic gyms and fitness studios
+    "gym near me",
     "fitness studio",
-    "boxing gym",
+    "fitness center",
+    # Niche verticals
+    "yoga studio",
+    "pilates barre studio",
+    "martial arts gym",
+    "bootcamp fitness",
+    "personal training studio",
+    "cycling spinning studio",
 ]
 
-MAX_PAGES_PER_QUERY = 3  # 3 × 20 = 60 results per query, 15 total API calls/city
+MAX_PAGES_PER_QUERY = 3  # 3 × 20 = 60 results per query
 
 
 class SerpApiScraper(BaseScraper):

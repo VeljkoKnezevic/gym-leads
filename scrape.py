@@ -18,7 +18,7 @@ if _env_path.exists():
             os.environ.setdefault(_k.strip(), _v.strip())
 
 from utils.geo import geocode_city
-from utils.dedup import deduplicate
+from utils.dedup import deduplicate, filter_corporate
 from utils.csv_writer import write_leads_csv
 from scrapers import MindBodyScraper, CrossFitScraper, SerpApiScraper, HyroxScraper
 
@@ -112,7 +112,8 @@ def main():
         print("\nNo leads found from any source.")
         sys.exit(0)
 
-    # Deduplicate across sources
+    # Remove corporate/franchise chains, then deduplicate
+    all_leads = filter_corporate(all_leads)
     unique_leads = deduplicate(all_leads)
 
     # Write CSV

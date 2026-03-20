@@ -78,6 +78,8 @@ def _merge_leads(existing: Lead, new: Lead) -> Lead:
         type=existing.type or new.type,
         source=existing.source,
         owner=existing.owner or new.owner,
+        owner_confidence=existing.owner_confidence or new.owner_confidence,
+        meta_ads_count=existing.meta_ads_count or new.meta_ads_count,
     )
     # Combine sources (e.g., "mindbody, crossfit")
     existing_sources = set(s.strip() for s in existing.source.split(","))
@@ -85,6 +87,47 @@ def _merge_leads(existing: Lead, new: Lead) -> Lead:
     all_sources = sorted(existing_sources | new_sources)
     merged.source = ", ".join(all_sources)
     return merged
+
+
+# Corporate/franchise chains to exclude — can't sell to these yet
+_CORPORATE_NAMES = [
+    "planet fitness", "la fitness", "24 hour fitness", "life time fitness",
+    "equinox", "soulcycle", "barrys bootcamp", "golds gym", "crunch fitness",
+    "world gym", "bally total fitness", "corepower yoga", "chuze fitness",
+    "eos fitness", "in-shape health clubs", "mountainside fitness",
+    "club pilates", "cyclebar", "stretchlab", "yogasix", "row house",
+    "akt", "stride running", "rumble boxing", "bft", "body fit training",
+    "lindora", "pure barre", "orangetheory fitness", "solidcore",
+    "burn boot camp", "9round", "snap fitness", "ufc gym",
+    "title boxing club", "hotworx", "retro fitness", "workout anytime",
+    "the bar method", "barre3", "ymca", "ywca", "jcc",
+    "jewish community center", "hospital fitness", "university recreation",
+    "municipal recreation",
+]
+
+
+def _is_corporate(name: str) -> bool:
+    """Check if a gym name matches a corporate/franchise chain."""
+    n = re.sub(r"[^a-z0-9\s]", "", name.lower().strip())
+    n = re.sub(r"\s+", " ", n).strip()
+    for corp in _CORPORATE_NAMES:
+        if corp in n or n in corp:
+            return True
+    return False
+
+
+def filter_corporate(leads: list[Lead]) -> list[Lead]:
+    """Remove leads that match corporate/franchise chains."""
+    kept = []
+    removed = 0
+    for lead in leads:
+        if _is_corporate(lead.name):
+            removed += 1
+        else:
+            kept.append(lead)
+    if removed:
+        print(f"  [filter] Removed {removed} corporate/franchise leads")
+    return kept
 
 
 def deduplicate(leads: list[Lead], threshold: float = 0.85) -> list[Lead]:

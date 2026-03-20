@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -13,17 +14,103 @@ USER_AGENT = (
     "Chrome/121.0.0.0 Safari/537.36"
 )
 
-PRIORITY_KEYWORDS = ["about", "team", "owner", "founder", "story", "contact"]
+PRIORITY_KEYWORDS = [
+    "about", "team", "owner", "founder", "story", "contact",
+    "leadership", "staff", "coaches", "our-story", "our-team",
+    "who-we-are", "meet", "bio", "history", "mission",
+]
 
 _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": USER_AGENT})
 
 
-def _get_text(html: str) -> str:
-    """Strip tags from HTML and return plain text."""
+def _extract_structured_data(soup: BeautifulSoup) -> str:
+    """Extract owner/person info from JSON-LD, meta author, and OpenGraph tags."""
+    parts: list[str] = []
+
+    # JSON-LD structured data
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+            _extract_jsonld_names(data, parts)
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    # Meta author tag
+    author_meta = soup.find("meta", attrs={"name": "author"})
+    if author_meta:
+        content = author_meta.get("content", "")
+        if content:
+            parts.append(f"Meta Author: {content}")
+
+    # OpenGraph tags
+    for prop in ("og:site_name", "og:author", "article:author"):
+        og = soup.find("meta", attrs={"property": prop})
+        if og:
+            content = og.get("content", "")
+            if content:
+                parts.append(f"OG {prop}: {content}")
+
+    return " | ".join(parts) if parts else ""
+
+
+def _extract_jsonld_names(data, parts: list[str]) -> None:
+    """Recursively extract person/organization names from JSON-LD data."""
+    if isinstance(data, list):
+        for item in data:
+            _extract_jsonld_names(item, parts)
+        return
+
+    if not isinstance(data, dict):
+        return
+
+    schema_type = data.get("@type", "")
+    if isinstance(schema_type, list):
+        schema_type = " ".join(schema_type)
+
+    # Extract names from Person, Organization, LocalBusiness types
+    for type_kw in ("Person", "Organization", "LocalBusiness", "HealthClub",
+                    "SportsActivityLocation", "ExerciseGym"):
+        if type_kw.lower() in schema_type.lower():
+            name = data.get("name", "")
+            if name:
+                parts.append(f"Schema {type_kw}: {name}")
+            founder = data.get("founder")
+            if founder:
+                if isinstance(founder, dict):
+                    fname = founder.get("name", "")
+                    if fname:
+                        parts.append(f"Schema Founder: {fname}")
+                elif isinstance(founder, str):
+                    parts.append(f"Schema Founder: {founder}")
+            # Check for employee/member fields
+            for field in ("employee", "member", "owns"):
+                val = data.get(field)
+                if isinstance(val, dict) and val.get("name"):
+                    parts.append(f"Schema {field}: {val['name']}")
+                elif isinstance(val, list):
+                    for v in val[:3]:  # limit
+                        if isinstance(v, dict) and v.get("name"):
+                            parts.append(f"Schema {field}: {v['name']}")
+
+    # Recurse into nested objects
+    for key, val in data.items():
+        if isinstance(val, (dict, list)):
+            _extract_jsonld_names(val, parts)
+
+
+def _get_text(html: str, is_subpage: bool = False) -> str:
+    """Strip tags from HTML and return plain text.
+
+    For subpages (about/team), keep header/footer since small gym sites
+    put owner info there.
+    """
     soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
+    for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
+    if not is_subpage:
+        for tag in soup(["header", "footer", "nav"]):
+            tag.decompose()
     return " ".join(soup.get_text(separator=" ").split())
 
 
@@ -65,11 +152,12 @@ def _internal_links(html: str, base_url: str) -> list[str]:
 def fetch_website_text(
     url: str,
     max_pages: int = 5,
-    max_chars: int = 8000,
+    max_chars: int = 15000,
 ) -> str:
     """Return concatenated plain text from the homepage and key sub-pages.
 
     Visits up to *max_pages* pages, prioritising about/team/contact pages.
+    Includes structured data (JSON-LD, meta tags) and labels each section.
     Returns empty string on any failure — never raises.
     """
     if not url:
@@ -83,7 +171,19 @@ def fetch_website_text(
 
     homepage_html = resp.text
     homepage_url = resp.url  # may differ from original after redirects
-    chunks: list[str] = [_get_text(homepage_html)]
+
+    # Extract structured data from homepage
+    soup = BeautifulSoup(homepage_html, "html.parser")
+    structured = _extract_structured_data(soup)
+
+    chunks: list[str] = []
+
+    # Add structured data first if found
+    if structured:
+        chunks.append(f"[STRUCTURED DATA] {structured}")
+
+    # Homepage text
+    chunks.append(f"[HOMEPAGE] {_get_text(homepage_html, is_subpage=False)}")
 
     links = _internal_links(homepage_html, homepage_url)
 
@@ -91,7 +191,8 @@ def fetch_website_text(
         try:
             r = _SESSION.get(link, timeout=10, allow_redirects=True)
             r.raise_for_status()
-            chunks.append(_get_text(r.text))
+            label = link.split("/")[-1] or "page"
+            chunks.append(f"[ABOUT/TEAM PAGE: {label}] {_get_text(r.text, is_subpage=True)}")
         except Exception:
             continue
 

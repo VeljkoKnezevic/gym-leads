@@ -21,12 +21,15 @@ class Lead:
     type: str = ""
     source: str = ""
     owner: str = ""
+    owner_confidence: str = ""
+    meta_ads_count: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-CSV_COLUMNS = ["name", "address", "city", "state", "phone", "website", "type", "source", "owner"]
+CSV_COLUMNS = ["name", "address", "city", "state", "phone", "website", "type", "source", "owner",
+               "owner_confidence", "meta_ads_count"]
 
 
 def normalize_phone(raw: str) -> str:
