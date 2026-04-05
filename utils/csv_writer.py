@@ -1,4 +1,4 @@
-"""CSV output writer for leads."""
+"""CSV reader/writer for leads."""
 
 import csv
 import os
@@ -19,6 +19,32 @@ def clean_name(name: str) -> str:
     name = re.sub(r",?\s*[A-Z]{2}-[A-Z]{2}-\d+$", "", name)   # Remove EM-VA-20005
     name = re.sub(r"\s+[A-Z]{2}\.[A-Z]{2}\.[A-Z]{2}$", "", name)  # Remove DC.MD.VA
     return name.strip()
+
+
+def read_leads_csv(path: str) -> list[Lead]:
+    """Read a CSV into Lead objects. Tolerates CSVs with missing columns."""
+    leads: list[Lead] = []
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            leads.append(Lead(
+                name=row.get("name", ""),
+                address=row.get("address", ""),
+                city=row.get("city", ""),
+                state=row.get("state", ""),
+                phone=row.get("phone", ""),
+                website=row.get("website", ""),
+                type=row.get("type", ""),
+                source=row.get("source", ""),
+                owner=row.get("owner", ""),
+                owner_confidence=row.get("owner_confidence", ""),
+                facebook_url=row.get("facebook_url", ""),
+                instagram_url=row.get("instagram_url", ""),
+                email=row.get("email", ""),
+                running_ads=row.get("running_ads", ""),
+                ad_pixels=row.get("ad_pixels", ""),
+            ))
+    return leads
 
 
 def write_leads_csv(leads: list[Lead], output_path: str) -> str:

@@ -9,7 +9,7 @@ import requests
 from utils.name_validator import validate_owner_name
 
 _PROMPT_TEMPLATE = """\
-You are extracting the owner or founder name of a local gym/fitness studio from its website content.
+You are extracting the owner(s) or founder(s) of a local gym/fitness studio from its website content.
 
 ## Context
 - Gym name: {gym_name}
@@ -17,41 +17,47 @@ You are extracting the owner or founder name of a local gym/fitness studio from 
 - Location: {city}, {state}
 
 ## Rules
-1. Find the LOCAL owner, operator, or founder of THIS specific gym location.
-2. For franchise gyms (F45, Orangetheory, Fit Body Boot Camp, CrossFit, etc.), find the LOCAL franchisee or studio owner — NOT the corporate brand founder.
-3. Return a full name (first + last). Do NOT return:
+1. Find ALL LOCAL owners, operators, or founders of THIS specific gym location.
+2. For franchise gyms (F45, Orangetheory, Fit Body Boot Camp, CrossFit, etc.), find the LOCAL franchisee or studio owner(s) — NOT the corporate brand founder.
+3. Each name must be a full name (first + last). Do NOT include:
    - A single first name only (e.g., "Mike")
-   - A trainer, coach, or instructor name (unless they are also the owner)
+   - A trainer, coach, or instructor name (unless they are also an owner)
    - The gym name itself
    - A corporate executive or celebrity
-4. If you cannot confidently identify the owner, return "Unknown".
+4. If you cannot confidently identify any owner, return "Unknown".
+5. If there are multiple owners or co-founders, list ALL of them — one per line.
 
 ## Examples
 
-Example 1 — Straightforward:
+Example 1 — Single owner:
 Website says: "Founded by Sarah Chen in 2019, Peak Fitness is a boutique gym..."
-[REASONING] The text explicitly states "Founded by Sarah Chen" — she is the founder of this specific gym.
-[ANSWER] Sarah Chen
+[REASONING] The text explicitly states "Founded by Sarah Chen" — she is the founder.
+[ANSWER]
+Sarah Chen
 
-Example 2 — Team page:
-Website says: "Our Team: Mike Thompson - Owner & Head Coach, Lisa Park - Lead Trainer..."
-[REASONING] Mike Thompson is listed as "Owner & Head Coach" on the team page. Lisa Park is a trainer, not an owner.
-[ANSWER] Mike Thompson
+Example 2 — Multiple owners:
+Website says: "Our Team: Mike Thompson - Co-Owner & Head Coach, Jamie Rivera - Co-Owner & Trainer..."
+[REASONING] Mike Thompson and Jamie Rivera are both listed as Co-Owners.
+[ANSWER]
+Mike Thompson
+Jamie Rivera
 
 Example 3 — Franchise (reject corporate founder):
 Gym name: "F45 Training Danbury"
 Website mentions: "Rob Deutsch founded F45 in Australia..."
 [REASONING] Rob Deutsch is the corporate founder of the F45 brand, not the local franchise owner. No local owner is identified.
-[ANSWER] Unknown
+[ANSWER]
+Unknown
 
 Example 4 — Only first name (reject):
 Website says: "Coach Mike runs the best workouts in town..."
 [REASONING] Only a first name "Mike" is given with no last name, and he's described as a coach, not an owner.
-[ANSWER] Unknown
+[ANSWER]
+Unknown
 
 ## Instructions
 First, write your reasoning in a [REASONING] section analyzing who is mentioned and their roles.
-Then, provide your answer in an [ANSWER] section with ONLY the full name or "Unknown".
+Then, provide your answer in an [ANSWER] section with one full name per line, or "Unknown".
 
 Website content:
 {content}
@@ -68,9 +74,10 @@ def find_owner(
     model: str = "gpt-oss:20b",
     host: str = "http://localhost:11434",
 ) -> tuple[str, float]:
-    """Ask a local Ollama model to extract the owner/founder name from website text.
+    """Ask a local Ollama model to extract owner/founder names from website text.
 
-    Returns (name, confidence_score). confidence_score is 0.0-1.0.
+    Returns (names_string, confidence_score) where names_string may be a
+    comma-separated list if multiple owners are found (e.g. "Sarah Chen, Mike Lee").
     Returns ("Unknown", 0.0) if none found, or ("", 0.0) on connection error.
     Never raises.
     """
@@ -94,49 +101,61 @@ def find_owner(
         resp.raise_for_status()
         data = resp.json()
         raw = data.get("response", "").strip()
-        name, reasoning = _parse_response(raw)
-        name = _clean_name(name)
+        names, reasoning = _parse_response(raw)
 
-        if not name or name.lower() == "unknown":
+        # Validate each name and keep the valid ones
+        valid_names = []
+        for name in names:
+            name = _clean_name(name)
+            if not name or name.lower() == "unknown":
+                continue
+            is_valid, reason = validate_owner_name(name, gym_name, gym_type)
+            if not is_valid:
+                print(f"    [validate] Rejected '{name}': {reason}")
+                continue
+            valid_names.append(name)
+
+        if not valid_names:
             return "Unknown", 0.0
 
-        # Validate name
-        is_valid, reason = validate_owner_name(name, gym_name, gym_type)
-        if not is_valid:
-            print(f"    [validate] Rejected '{name}': {reason}")
-            return "Unknown", 0.0
-
-        # Compute confidence score
-        confidence = _compute_confidence(name, reasoning, gym_name, gym_type)
-        return name, confidence
+        combined = ", ".join(valid_names)
+        confidence = _compute_confidence(combined, reasoning, gym_name, gym_type)
+        return combined, confidence
 
     except Exception:
         return "", 0.0
 
 
-def _parse_response(raw: str) -> tuple[str, str]:
-    """Extract the answer and reasoning from structured model output."""
+def _parse_response(raw: str) -> tuple[list[str], str]:
+    """Extract the list of names and reasoning from structured model output.
+
+    Returns (list_of_name_strings, reasoning_string).
+    """
     reasoning = ""
-    answer = ""
+    names: list[str] = []
 
-    # Try to find [ANSWER] marker
-    answer_match = re.search(r"\[ANSWER\]\s*(.+?)(?:\n|$)", raw, re.IGNORECASE)
-    if answer_match:
-        answer = answer_match.group(1).strip()
-
-    # Try to find [REASONING] section
+    # Extract [REASONING] section
     reasoning_match = re.search(
         r"\[REASONING\]\s*(.*?)(?:\[ANSWER\]|$)", raw, re.IGNORECASE | re.DOTALL
     )
     if reasoning_match:
         reasoning = reasoning_match.group(1).strip()
 
-    # Fallback: if no [ANSWER] marker, use old parsing
-    if not answer:
-        answer = _clean_name(raw)
+    # Extract everything after [ANSWER]
+    answer_match = re.search(r"\[ANSWER\]\s*(.*?)$", raw, re.IGNORECASE | re.DOTALL)
+    if answer_match:
+        answer_block = answer_match.group(1).strip()
+        # Each non-empty line is a candidate name
+        for line in answer_block.splitlines():
+            line = line.strip().strip("-•*").strip()
+            if line:
+                names.append(line)
+    else:
+        # Fallback: treat the whole response as a single name attempt
+        names = [raw.strip()]
         reasoning = raw
 
-    return answer, reasoning
+    return names, reasoning
 
 
 def _clean_name(raw: str) -> str:

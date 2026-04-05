@@ -22,14 +22,19 @@ class Lead:
     source: str = ""
     owner: str = ""
     owner_confidence: str = ""
-    meta_ads_count: str = ""
+    facebook_url: str = ""
+    instagram_url: str = ""
+    email: str = ""
+    running_ads: str = ""
+    ad_pixels: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
 CSV_COLUMNS = ["name", "address", "city", "state", "phone", "website", "type", "source", "owner",
-               "owner_confidence", "meta_ads_count"]
+               "owner_confidence", "facebook_url", "instagram_url", "email",
+               "running_ads", "ad_pixels"]
 
 
 def normalize_phone(raw: str) -> str:

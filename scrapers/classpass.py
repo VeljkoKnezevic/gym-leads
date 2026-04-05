@@ -1,5 +1,7 @@
 """ClassPass scraper — stealth browser + network-interception fallback."""
 
+import re
+
 from playwright.sync_api import Page, sync_playwright
 
 from .base import BaseScraper, Lead, USER_AGENT
@@ -51,6 +53,8 @@ class ClassPassScraper(BaseScraper):
                 viewport={"width": 1366, "height": 768},
                 locale="en-US",
                 timezone_id="America/New_York",
+                geolocation={"latitude": self.geo["lat"], "longitude": self.geo["lng"]},
+                permissions=["geolocation"],
             )
             context.add_init_script(_STEALTH_SCRIPT)
             page = context.new_page()
@@ -86,8 +90,12 @@ class ClassPassScraper(BaseScraper):
 
         page.on("response", on_response)
 
-        print(f"  [classpass] Navigating to ClassPass search...")
-        page.goto("https://classpass.com/search", wait_until="domcontentloaded", timeout=60000)
+        # Build city slug: "Hartford, Connecticut" -> "hartford--ct--united-states"
+        city_slug = re.sub(r"[^a-z0-9]+", "-", self.geo["city"].lower()).strip("-")
+        state_slug = re.sub(r"[^a-z0-9]+", "-", self.geo["state"].lower()).strip("-")
+        search_url = f"https://classpass.com/classes/{city_slug}--{state_slug}--united-states"
+        print(f"  [classpass] Navigating to: {search_url}")
+        page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(5000)
 
         # Diagnostics — tell us exactly what page we landed on
@@ -142,21 +150,18 @@ class ClassPassScraper(BaseScraper):
             page.wait_for_timeout(3000)
 
     def _set_location(self, page: Page, city_name: str) -> bool:
-        try:
-            page.wait_for_selector("input", timeout=12000)
-        except Exception:
-            pass
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(2000)
 
+        # Prefer real input elements; fall back to combobox divs
         SELECTORS = [
-            '[role="searchbox"]',
-            '[role="combobox"]',
             'input[placeholder*="City" i]',
             'input[placeholder*="location" i]',
             'input[placeholder*="neighborhood" i]',
             'input[placeholder*="search" i]',
             'input[type="search"]',
             'input[type="text"]',
+            '[role="searchbox"]',
+            '[role="combobox"]',
             'input',
         ]
 
@@ -176,9 +181,25 @@ class ClassPassScraper(BaseScraper):
 
         print(f"  [classpass] Setting location to: {city_name}")
         search_input.click()
-        page.wait_for_timeout(500)
-        search_input.fill("")
-        search_input.type(city_name, delay=80)
+        page.wait_for_timeout(800)
+
+        # After clicking a combobox div, a real <input> may appear inside it
+        real_input = None
+        try:
+            candidate = page.locator("input:visible").first
+            if candidate.is_visible(timeout=1500):
+                real_input = candidate
+        except Exception:
+            pass
+
+        if real_input:
+            real_input.click(click_count=3)
+            real_input.type(city_name, delay=80)
+        else:
+            # keyboard.type() works on any focused element, unlike .fill()
+            page.keyboard.press("Control+a")
+            page.keyboard.type(city_name, delay=80)
+
         page.wait_for_timeout(3000)
 
         try:

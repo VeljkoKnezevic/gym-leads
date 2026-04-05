@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -147,6 +148,76 @@ def _internal_links(html: str, base_url: str) -> list[str]:
             rest.append(clean)
 
     return priority + rest
+
+
+_IG_SKIP_SLUGS = {
+    "explore", "p", "stories", "reels", "reel", "tv", "accounts", "directory",
+    "developer", "legal", "privacy", "about", "press", "api", "blog", "help",
+    "sharedfiles", "graphql", "static",
+}
+
+
+def fetch_raw_html(url: str) -> str:
+    """Fetch a URL and return raw HTML. Returns empty string on any error."""
+    if not url:
+        return ""
+    try:
+        resp = _SESSION.get(url, timeout=10, allow_redirects=True)
+        resp.raise_for_status()
+        return resp.text
+    except Exception:
+        return ""
+
+
+def extract_facebook_url_from_html(html: str) -> str:
+    """Extract Facebook page URL from raw HTML string."""
+    if not html:
+        return ""
+    soup = BeautifulSoup(html, "html.parser")
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if "facebook.com" not in href:
+            continue
+        if any(skip in href for skip in ("/sharer", "/dialog", "/share?", "facebook.com/ad")):
+            continue
+        parsed = urlparse(href)
+        path = parsed.path.strip("/")
+        if not path or path in ("", "pages", "groups"):
+            continue
+        # profile.php?id=XXXXX — keep the id param, it IS the page identifier
+        if path == "profile.php":
+            from urllib.parse import parse_qs
+            pid = parse_qs(parsed.query).get("id", [None])[0]
+            if pid:
+                return f"https://www.facebook.com/profile.php?id={pid}"
+            continue  # profile.php with no id is useless
+        return parsed._replace(scheme="https", fragment="", query="").geturl()
+    return ""
+
+
+def extract_instagram_url_from_html(html: str) -> str:
+    """Extract Instagram page URL from raw HTML string."""
+    if not html:
+        return ""
+    matches = re.findall(
+        r'https?://(?:www\.)?instagram\.com/([\w.\-]+)(?:[/?"\'\s]|$)',
+        html,
+        re.IGNORECASE,
+    )
+    for slug in matches:
+        clean = slug.rstrip("./").lower()
+        if clean not in _IG_SKIP_SLUGS and len(clean) >= 3:
+            return f"https://www.instagram.com/{slug}"
+    return ""
+
+
+def extract_facebook_url(url: str) -> str:
+    """Fetch a gym's website and extract their Facebook page URL from it.
+
+    Looks for links to facebook.com that point to a page (not share buttons, etc.).
+    Returns the Facebook URL or empty string. Never raises.
+    """
+    return extract_facebook_url_from_html(fetch_raw_html(url))
 
 
 def fetch_website_text(

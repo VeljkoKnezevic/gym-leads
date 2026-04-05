@@ -1,113 +1,91 @@
-"""Filter gym leads to only those actively running Meta ads.
+"""Check gym leads for active ads via pixel detection.
+
+Checks for ad tracking pixels (Meta, Google, TikTok) detected during
+prefetch. Pixels are found in the website HTML and stored in ad_pixels.
+
+Outputs one file: leads where running_ads=true (has ad pixels).
 
 Usage:
-    python ad_check.py --input output/ashburn-va-leads.csv
-    python ad_check.py --input output/ashburn-va-leads.csv --min-ads 2
+    python ad_check.py --input output/danbury-ct-leads-prefetched.csv
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import Counter
 from pathlib import Path
 
-# Windows terminals default to cp1252 which chokes on non-ASCII gym names
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from scrapers.base import Lead, CSV_COLUMNS
-from utils.csv_writer import write_leads_csv
-from utils.dedup import filter_corporate
-from utils.meta_ads import check_meta_ads
-
-
-def _read_leads_csv(path: str) -> list[Lead]:
-    """Read a CSV into Lead objects."""
-    leads: list[Lead] = []
-    with open(path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            leads.append(Lead(
-                name=row.get("name", ""),
-                address=row.get("address", ""),
-                city=row.get("city", ""),
-                state=row.get("state", ""),
-                phone=row.get("phone", ""),
-                website=row.get("website", ""),
-                type=row.get("type", ""),
-                source=row.get("source", ""),
-                owner=row.get("owner", ""),
-                owner_confidence=row.get("owner_confidence", ""),
-                meta_ads_count=row.get("meta_ads_count", ""),
-            ))
-    return leads
-
-
-def _check_lead(lead: Lead) -> Lead:
-    """Check a single lead for active Meta ads."""
-    meta_count = check_meta_ads(lead.name)
-    lead.meta_ads_count = str(meta_count)
-    return lead
+from scrapers.base import Lead
+from utils.csv_writer import read_leads_csv, write_leads_csv
+from utils.geo import STATE_ABBR, ABBR_TO_STATE
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Filter gym leads to active advertisers")
+    parser = argparse.ArgumentParser(description="Check gym leads for ads via pixel detection")
     parser.add_argument("--input", required=True, help="Input CSV path")
-    parser.add_argument("--output", default="", help="Output CSV path (default: input stem + '-ads.csv')")
-    parser.add_argument("--workers", type=int, default=3, help="Parallel workers (default: 3)")
-    parser.add_argument("--min-ads", type=int, default=1, help="Minimum active ads to keep a lead (default: 1)")
     args = parser.parse_args()
 
-    # Default output: input stem + '-ads.csv'
-    if args.output:
-        output_path = args.output
-    else:
-        stem = Path(args.input).stem
-        parent = Path(args.input).parent
-        output_path = str(parent / f"{stem}-ads.csv")
+    stem = Path(args.input).stem
+    parent = Path(args.input).parent
+    ads_output = str(parent / f"{stem}-ads.csv")
 
-    leads = _read_leads_csv(args.input)
-    leads = filter_corporate(leads)
+    leads = read_leads_csv(args.input)
 
-    to_check: list[Lead] = []
-    already_checked: list[Lead] = []
+    # State filter
+    state_counts = Counter(l.state.strip() for l in leads if l.state.strip())
+    if state_counts:
+        target_state_raw = state_counts.most_common(1)[0][0]
+        if len(target_state_raw) == 2:
+            target_abbr = target_state_raw.upper()
+            target_full = ABBR_TO_STATE.get(target_abbr, target_abbr).title()
+        else:
+            target_full = target_state_raw.title()
+            target_abbr = STATE_ABBR.get(target_full, "").upper()
 
+        before = len(leads)
+        leads = [
+            l for l in leads
+            if not l.state
+            or l.state.strip().upper() in (target_abbr, target_full.upper())
+            or l.state.strip().title() == target_full
+        ]
+        removed = before - len(leads)
+        if removed:
+            print(f"[ad_check] State filter ({target_full}): removed {removed} leads, {len(leads)} remain")
+
+    # Mark leads as running ads based on pixel detection (done during prefetch)
     for lead in leads:
-        if lead.meta_ads_count:
-            already_checked.append(lead)
+        if lead.ad_pixels:
+            lead.running_ads = "true"
         else:
-            to_check.append(lead)
+            lead.running_ads = "false"
 
-    print(f"[ad_check] {len(leads)} total leads — {len(to_check)} to check, "
-          f"{len(already_checked)} already checked")
+    running = [l for l in leads if l.running_ads == "true"]
 
-    # Check ads (sequential — each check launches its own browser)
-    for i, lead in enumerate(to_check, 1):
-        try:
-            _check_lead(lead)
-        except Exception as e:
-            print(f"[ad_check] ERROR checking '{lead.name}': {e}")
-            lead.meta_ads_count = "0"
+    # Print results
+    print(f"[ad_check] {len(leads)} total leads")
+    for lead in leads:
+        status = f"pixels={lead.ad_pixels}" if lead.ad_pixels else "no pixels"
+        print(f"[ad_check]   {lead.name!r} -> {status} running={lead.running_ads}")
 
-        print(f"[ad_check] [{i}/{len(to_check)}] {lead.name!r} -> meta={lead.meta_ads_count}")
+    write_leads_csv(running, ads_output)
 
-    # Filter: keep leads with enough ad signals
-    all_leads = already_checked + to_check
-    passed = []
-    failed = 0
-    for lead in all_leads:
-        total = int(lead.meta_ads_count or 0)
-        if total >= args.min_ads:
-            passed.append(lead)
-        else:
-            failed += 1
+    # Summary
+    pixel_types = Counter()
+    for l in running:
+        for p in l.ad_pixels.split(","):
+            if p.strip():
+                pixel_types[p.strip()] += 1
 
-    write_leads_csv(passed, output_path)
-
-    print(f"\n[ad_check] Done — {len(passed)} leads with active ads, {failed} filtered out")
-    print(f"[ad_check] Wrote {output_path}")
+    print(f"\n[ad_check] Done — {len(running)}/{len(leads)} running ads (pixel detected)")
+    if pixel_types:
+        for ptype, count in pixel_types.most_common():
+            print(f"[ad_check]   {ptype}: {count}")
+    print(f"[ad_check] Output: {ads_output}")
 
 
 if __name__ == "__main__":

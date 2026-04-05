@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
-import re
+import os
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
+
+# Load .env if present (for SERPAPI_KEY)
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+if _env_path.exists():
+    for _line in _env_path.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -17,12 +27,14 @@ USER_AGENT = (
 _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": USER_AGENT})
 
+SERPAPI_URL = "https://serpapi.com/search"
+SERPER_URL = "https://google.serper.dev/search"
+
 # Domains that are platform/aggregator URLs (not real gym websites)
 PLATFORM_DOMAINS = {
     "mindbodyonline.com", "www.mindbodyonline.com",
     "clients.mindbodyonline.com",
     "crossfit.com", "www.crossfit.com", "map.crossfit.com",
-    "f45training.com", "www.f45training.com",
     "wodify.com", "app.wodify.com",
     "zenplanner.com",
     "marianaiframes.com",
@@ -47,7 +59,20 @@ NOISE_DOMAINS = {
     "bbb.org", "www.bbb.org",
     "groupon.com", "www.groupon.com",
     "classpass.com", "www.classpass.com",
+    "mapquest.com", "www.mapquest.com",
+    "yellowpages.com", "www.yellowpages.com",
+    "nextdoor.com", "www.nextdoor.com",
+    "thumbtack.com", "www.thumbtack.com",
+    "patch.com", "www.patch.com",
+    "wikipedia.org", "en.wikipedia.org",
+    "mapbox.com", "www.mapbox.com",
+    "functionalinspiredtraining.com", "www.functionalinspiredtraining.com",
+    "wellnessliving.com", "www.wellnessliving.com",
+    "drb.ai",
+    "threads.net", "www.threads.net",
 }
+
+_ALL_SKIP = NOISE_DOMAINS | PLATFORM_DOMAINS
 
 
 def _is_platform_url(url: str) -> bool:
@@ -59,12 +84,11 @@ def _is_platform_url(url: str) -> bool:
         return False
 
 
-def _is_noise_url(url: str) -> bool:
+def _is_skip_url(url: str) -> bool:
     """Check if a URL is social media, aggregator, or other noise."""
     try:
         netloc = urlparse(url).netloc.lower()
-        return any(netloc == d or netloc.endswith("." + d)
-                   for d in (NOISE_DOMAINS | PLATFORM_DOMAINS))
+        return any(netloc == d or netloc.endswith("." + d) for d in _ALL_SKIP)
     except Exception:
         return True
 
@@ -82,28 +106,21 @@ def _extract_external_links(html: str, source_url: str) -> list[str]:
         if not href or href.startswith("#") or href.startswith("mailto:") or href.startswith("tel:"):
             continue
 
-        # Must be absolute URL with http(s)
         parsed = urlparse(href)
         if parsed.scheme not in ("http", "https"):
             continue
 
         netloc = parsed.netloc.lower()
-
-        # Skip same-domain links
         if netloc == source_netloc or netloc.endswith("." + source_netloc):
             continue
-
-        # Skip noise domains
-        if _is_noise_url(href):
+        if _is_skip_url(href):
             continue
 
-        # Normalize
         clean = parsed._replace(fragment="").geturl()
         if clean in seen:
             continue
         seen.add(clean)
 
-        # Prioritize links with "website" or "visit" in anchor text
         anchor_text = (a.get_text() or "").lower()
         if any(kw in anchor_text for kw in ("visit", "website", "official", "home")):
             links.insert(0, clean)
@@ -125,10 +142,81 @@ def _resolve_from_platform(url: str) -> str:
     return links[0] if links else ""
 
 
-def resolve_website(lead_url: str, gym_name: str = "") -> str:
+def _search_serper(gym_name: str, city: str = "", state: str = "") -> str:
+    """Use Serper.dev (free tier: 2500 queries) to find the gym's real website."""
+    api_key = os.environ.get("SERPER_API_KEY", "")
+    if not api_key:
+        return ""
+
+    query = gym_name
+    if city:
+        query += f" {city}"
+    if state:
+        query += f" {state}"
+
+    try:
+        resp = _SESSION.post(SERPER_URL, json={"q": query, "num": 5},
+                             headers={"X-API-KEY": api_key}, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return ""
+
+    for result in data.get("organic", []):
+        link = result.get("link", "")
+        if not link:
+            continue
+        if _is_skip_url(link):
+            continue
+        return link
+
+    return ""
+
+
+def _search_serpapi(gym_name: str, city: str = "", state: str = "") -> str:
+    """Use SerpAPI as fallback search engine."""
+    api_key = os.environ.get("SERPAPI_KEY", "")
+    if not api_key:
+        return ""
+
+    query = gym_name
+    if city:
+        query += f" {city}"
+    if state:
+        query += f" {state}"
+
+    try:
+        resp = _SESSION.get(SERPAPI_URL, params={
+            "q": query,
+            "engine": "google",
+            "api_key": api_key,
+            "num": 5,
+        }, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return ""
+
+    for result in data.get("organic_results", []):
+        link = result.get("link", "")
+        if not link:
+            continue
+        if _is_skip_url(link):
+            continue
+        return link
+
+    return ""
+
+
+def resolve_website(lead_url: str, gym_name: str = "",
+                    city: str = "", state: str = "") -> str:
     """Resolve a platform URL to the real gym website.
 
-    Returns the resolved URL, or the original URL if resolution fails or isn't needed.
+    Strategy:
+      1. Try fetching the platform page and extracting outbound links
+      2. If that fails (JS-rendered like MindBody), SerpAPI search
+
+    Returns the resolved URL, or the original URL if resolution fails.
     """
     if not lead_url:
         return lead_url
@@ -136,9 +224,23 @@ def resolve_website(lead_url: str, gym_name: str = "") -> str:
     if not _is_platform_url(lead_url):
         return lead_url
 
-    resolved = _resolve_from_platform(lead_url)
-    if resolved:
-        print(f"    [resolve] {lead_url} -> {resolved}")
-        return resolved
+    # Strategy 1: Extract links from platform page directly
+    # Skip for domains known to have junk outbound links (JS-rendered or ad-heavy)
+    netloc = urlparse(lead_url).netloc.lower()
+    skip_platform_fetch = any(d in netloc for d in ("mindbodyonline.com", "f45training.com"))
+    if not skip_platform_fetch:
+        resolved = _resolve_from_platform(lead_url)
+        if resolved:
+            print(f"    [resolve] {lead_url} -> {resolved} (platform link)")
+            return resolved
+
+    # Strategy 2: Search for the gym's real website
+    # Try Serper.dev first (free tier), then SerpAPI as fallback
+    if gym_name:
+        for search_fn, label in [(_search_serper, "serper"), (_search_serpapi, "serpapi")]:
+            resolved = search_fn(gym_name, city, state)
+            if resolved:
+                print(f"    [resolve] {lead_url} -> {resolved} ({label})")
+                return resolved
 
     return lead_url

@@ -1,19 +1,27 @@
-"""SerpAPI Google Maps scraper — no browser needed, phone in search response."""
+"""Google Maps scraper via Serper.dev Maps API — no browser needed."""
 
 import os
 import time
+from pathlib import Path
 from typing import Optional
 
 import requests
 
 from .base import BaseScraper, Lead
 
-SERPAPI_SEARCH_URL = "https://serpapi.com/search"
+# Load .env if present (for SERPER_API_KEY / SERPAPI_KEY)
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+if _env_path.exists():
+    for _line in _env_path.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
+
+SERPER_MAPS_URL = "https://google.serper.dev/maps"
 
 # Balanced niche coverage — broad gym queries first, then targeted niches.
-# Martial arts consolidated into one query since "martial arts" already surfaces
-# boxing, kickboxing, BJJ, karate, etc. on Google Maps.
-# 9 queries × 3 pages = 27 API calls per city (~9 city runs/month on free tier).
+# 9 queries × up to 3 pages = 27 API calls per city.
 GYM_QUERIES = [
     # Broad — these catch the most generic gyms and fitness studios
     "gym near me",
@@ -28,6 +36,7 @@ GYM_QUERIES = [
     "cycling spinning studio",
 ]
 
+RESULTS_PER_PAGE = 20
 MAX_PAGES_PER_QUERY = 3  # 3 × 20 = 60 results per query
 
 
@@ -38,11 +47,117 @@ class SerpApiScraper(BaseScraper):
         return self._scrape(None)  # skip browser, use requests
 
     def _scrape(self, page) -> list[Lead]:
-        api_key = os.environ.get("SERPAPI_KEY", "")
+        api_key = os.environ.get("SERPER_API_KEY", "")
         if not api_key:
-            print("  [google_maps] SERPAPI_KEY not set, skipping")
+            # Fall back to SerpAPI if available
+            api_key_serpapi = os.environ.get("SERPAPI_KEY", "")
+            if api_key_serpapi:
+                return self._scrape_serpapi(api_key_serpapi)
+            print("  [google_maps] SERPER_API_KEY not set, skipping")
             return []
 
+        all_businesses: list[dict] = []
+        seen_place_ids: set[str] = set()
+
+        for query in GYM_QUERIES:
+            for page_num in range(MAX_PAGES_PER_QUERY):
+                payload = {
+                    "q": query,
+                    "ll": f"@{self.geo['lat']},{self.geo['lng']},12z",
+                    "num": RESULTS_PER_PAGE,
+                    "page": page_num + 1,
+                }
+                headers = {
+                    "X-API-KEY": api_key,
+                    "Content-Type": "application/json",
+                }
+
+                data = None
+                for attempt in range(3):
+                    try:
+                        resp = requests.post(
+                            SERPER_MAPS_URL, json=payload,
+                            headers=headers, timeout=30,
+                        )
+                        data = resp.json()
+                        break
+                    except Exception as e:
+                        wait = 10 * (attempt + 1)
+                        print(f"  [google_maps] '{query}' p{page_num+1} attempt {attempt+1} failed: {e} — waiting {wait}s")
+                        time.sleep(wait)
+
+                if data is None:
+                    print(f"  [google_maps] Skipping '{query}' p{page_num+1} after 3 failures")
+                    break
+
+                results = data.get("places", [])
+                if not results:
+                    break
+
+                new = 0
+                for biz in results:
+                    place_id = biz.get("placeId") or biz.get("cid", "")
+                    if place_id and place_id in seen_place_ids:
+                        continue
+                    if place_id:
+                        seen_place_ids.add(place_id)
+                    all_businesses.append(biz)
+                    new += 1
+
+                print(
+                    f"  [google_maps] '{query}' p{page_num + 1}: "
+                    f"{len(results)} results ({new} new)"
+                )
+
+                if len(results) < RESULTS_PER_PAGE:
+                    break
+
+        leads = [self._parse_serper(b) for b in all_businesses]
+        leads = [l for l in leads if l]
+        print(f"  [google_maps] Found {len(leads)} leads")
+        return leads
+
+    def _parse_serper(self, b: dict) -> Optional[Lead]:
+        name = b.get("title", "").strip()
+        if not name:
+            return None
+
+        address_raw = b.get("address", "")
+        parts = [p.strip() for p in address_raw.split(",")]
+        if len(parts) >= 3:
+            address = ", ".join(parts[:-2])
+            city = parts[-2].strip()
+            state_zip = parts[-1].strip().split()
+            state = state_zip[0] if state_zip else self.geo["state"]
+        elif len(parts) == 2:
+            address = parts[0]
+            city = self.geo["city"]
+            state = self.geo["state"]
+        else:
+            address = address_raw
+            city = self.geo["city"]
+            state = self.geo["state"]
+
+        gym_type = b.get("type", "Fitness")
+        phone = b.get("phoneNumber", "")
+        website = b.get("website", "")
+
+        return Lead(
+            name=name,
+            address=address,
+            city=city,
+            state=state,
+            phone=phone,
+            website=website,
+            type=gym_type,
+            source="google_maps",
+        )
+
+    # --- SerpAPI fallback (legacy) ---
+
+    def _scrape_serpapi(self, api_key: str) -> list[Lead]:
+        """Fallback to SerpAPI if SERPER_API_KEY is not available."""
+        print("  [google_maps] Using SerpAPI fallback")
         all_businesses: list[dict] = []
         seen_place_ids: set[str] = set()
 
@@ -58,12 +173,12 @@ class SerpApiScraper(BaseScraper):
                     "api_key": api_key,
                 }
 
-                # Retry this single request up to 3 times before moving on
                 data = None
                 for attempt in range(3):
                     try:
                         resp = requests.get(
-                            SERPAPI_SEARCH_URL, params=params, timeout=30
+                            "https://serpapi.com/search",
+                            params=params, timeout=30,
                         )
                         data = resp.json()
                         break
@@ -73,12 +188,11 @@ class SerpApiScraper(BaseScraper):
                         time.sleep(wait)
 
                 if data is None:
-                    print(f"  [google_maps] Skipping '{query}' p{page_num+1} after 3 failures")
-                    break  # skip remaining pages for this query
+                    break
 
                 results = data.get("local_results", [])
                 if not results:
-                    break  # no more pages for this query
+                    break
 
                 new = 0
                 for biz in results:
@@ -96,26 +210,23 @@ class SerpApiScraper(BaseScraper):
                 )
 
                 if len(results) < 20:
-                    break  # last page for this query
+                    break
 
-        leads = [self._parse(b) for b in all_businesses]
+        leads = [self._parse_serpapi(b) for b in all_businesses]
         leads = [l for l in leads if l]
         print(f"  [google_maps] Found {len(leads)} leads")
         return leads
 
-    def _parse(self, b: dict) -> Optional[Lead]:
+    def _parse_serpapi(self, b: dict) -> Optional[Lead]:
         name = b.get("title", "").strip()
         if not name:
             return None
 
         address_raw = b.get("address", "")
-        # SerpAPI address: "123 Main St, Charleston, SC 29401"
-        # Split off city/state from the street address
         parts = [p.strip() for p in address_raw.split(",")]
         if len(parts) >= 3:
             address = ", ".join(parts[:-2])
             city = parts[-2].strip()
-            # Last part may be "SC 29401" — take just the state code
             state_zip = parts[-1].strip().split()
             state = state_zip[0] if state_zip else self.geo["state"]
         elif len(parts) == 2:

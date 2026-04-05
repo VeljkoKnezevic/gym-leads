@@ -4,6 +4,23 @@ import re
 from difflib import SequenceMatcher
 
 from scrapers.base import Lead
+from urllib.parse import urlparse
+
+_PLATFORM_HOSTS = {
+    "mindbodyonline.com", "crossfit.com", "map.crossfit.com",
+    "f45training.com", "wodify.com", "zenplanner.com",
+}
+
+
+def _is_platform_url(url: str) -> bool:
+    if not url:
+        return False
+    try:
+        netloc = urlparse(url).netloc.lower().lstrip("www.")
+        return any(netloc == h or netloc.endswith("." + h) for h in _PLATFORM_HOSTS)
+    except Exception:
+        return False
+
 
 # US state abbreviation <-> full name mapping for normalization
 _STATE_ABBREV = {
@@ -68,18 +85,27 @@ def _is_name_match(a: str, b: str, threshold: float) -> bool:
 
 def _merge_leads(existing: Lead, new: Lead) -> Lead:
     """Merge two leads, preferring non-empty fields and combining sources."""
+    # Prefer the real gym website over a platform URL (mindbody, crossfit.com, etc.)
+    existing_web = existing.website or ""
+    new_web = new.website or ""
+    if _is_platform_url(existing_web) and new_web and not _is_platform_url(new_web):
+        best_website = new_web
+    else:
+        best_website = existing_web or new_web
+
     merged = Lead(
         name=existing.name or new.name,
         address=existing.address or new.address,
         city=existing.city or new.city,
         state=existing.state or new.state,
         phone=existing.phone or new.phone,
-        website=existing.website or new.website,
+        website=best_website,
         type=existing.type or new.type,
         source=existing.source,
         owner=existing.owner or new.owner,
         owner_confidence=existing.owner_confidence or new.owner_confidence,
-        meta_ads_count=existing.meta_ads_count or new.meta_ads_count,
+        facebook_url=existing.facebook_url or new.facebook_url,
+        ad_pixels=existing.ad_pixels or new.ad_pixels,
     )
     # Combine sources (e.g., "mindbody, crossfit")
     existing_sources = set(s.strip() for s in existing.source.split(","))

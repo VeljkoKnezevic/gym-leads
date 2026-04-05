@@ -17,7 +17,7 @@ if _env_path.exists():
             _k, _v = _line.split("=", 1)
             os.environ.setdefault(_k.strip(), _v.strip())
 
-from utils.geo import geocode_city
+from utils.geo import geocode_city, STATE_ABBR
 from utils.dedup import deduplicate, filter_corporate
 from utils.csv_writer import write_leads_csv
 from scrapers import MindBodyScraper, CrossFitScraper, SerpApiScraper, HyroxScraper, ClassPassScraper
@@ -30,7 +30,7 @@ SCRAPER_MAP = {
     "classpass": ClassPassScraper,
 }
 
-ALL_SOURCES = list(SCRAPER_MAP.keys())
+ALL_SOURCES = ["mindbody", "crossfit", "google_maps", "hyrox"]  # classpass excluded (requires US IP)
 
 
 def run_scraper(source: str, scraper_cls, geo: dict, headless: bool, enrich: bool = True):
@@ -113,9 +113,32 @@ def main():
         print("\nNo leads found from any source.")
         sys.exit(0)
 
-    # Remove corporate/franchise chains, then deduplicate
-    all_leads = filter_corporate(all_leads)
+    # Deduplicate across sources
     unique_leads = deduplicate(all_leads)
+
+    # Remove corporate/franchise chains
+    unique_leads = filter_corporate(unique_leads)
+
+    # Filter to target state only (scrapers search by radius and pull in neighboring states)
+    target_state_full = geo["state"]  # e.g. "Connecticut"
+    target_state_abbr = STATE_ABBR.get(target_state_full.title(), "").upper()
+    before_filter = len(unique_leads)
+    unique_leads = [
+        l for l in unique_leads
+        if not l.state or  # keep leads with no state (can't disqualify)
+        l.state.strip().upper() in (target_state_full.upper(), target_state_abbr)
+        or l.state.strip().title() == target_state_full.title()
+    ]
+    removed = before_filter - len(unique_leads)
+    if removed:
+        print(f"  [filter] Removed {removed} out-of-state leads (kept {target_state_full} only)")
+
+    # Filter leads with no website
+    before_filter = len(unique_leads)
+    unique_leads = [l for l in unique_leads if l.website]
+    removed = before_filter - len(unique_leads)
+    if removed:
+        print(f"  [filter] Removed {removed} leads with no website")
 
     # Write CSV
     path = write_leads_csv(unique_leads, output_path)
