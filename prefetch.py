@@ -40,7 +40,7 @@ from utils.website_fetcher import (
 from utils.cache import get_cache_path, DEFAULT_CACHE_DIR
 from utils.email_finder import find_email
 from utils.pixel_detect import detect_pixels, pixel_summary
-from utils.website_resolver import resolve_website, _is_platform_url as _is_platform_url
+from utils.website_resolver import _is_platform_url
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -116,12 +116,9 @@ def _prefetch_lead(lead: Lead, cache_dir: str) -> tuple[Lead, str]:
     if not lead.website:
         return lead, "no_website"
 
-    # --- Step 0: Resolve platform URLs (mindbody, crossfit.com, etc.) to real gym site ---
-    if _is_platform_url(lead.website):
-        resolved = resolve_website(lead.website, lead.name,
-                                   city=lead.city, state=lead.state)
-        if resolved and resolved != lead.website:
-            lead.website = resolved  # persist real URL to CSV
+    # --- Step 0: Check if this is a platform URL (mindbody, crossfit.com, etc.) ---
+    # Platform URLs get skipped for pixel detection (their pixels aren't the gym's)
+    is_platform = _is_platform_url(lead.website)
 
     cache_file = get_cache_path(lead, cache_dir)
     already_cached = cache_file.exists() and cache_file.stat().st_size > 100
@@ -140,6 +137,7 @@ def _prefetch_lead(lead: Lead, cache_dir: str) -> tuple[Lead, str]:
                 all_html_parts.append(sub_html)
 
     # Extract FB/IG/email/pixels from ALL fetched pages
+    # Skip pixel detection on platform URLs — their pixels aren't the gym's
     for html_part in all_html_parts:
         if not lead.facebook_url:
             lead.facebook_url = extract_facebook_url_from_html(html_part)
@@ -147,7 +145,7 @@ def _prefetch_lead(lead: Lead, cache_dir: str) -> tuple[Lead, str]:
             lead.instagram_url = extract_instagram_url_from_html(html_part)
         if not lead.email:
             lead.email = find_email(html_part)
-        if not lead.ad_pixels:
+        if not is_platform and not lead.ad_pixels:
             pixels = detect_pixels(html_part)
             summary = pixel_summary(pixels)
             if summary:
@@ -167,7 +165,7 @@ def _prefetch_lead(lead: Lead, cache_dir: str) -> tuple[Lead, str]:
                 lead.instagram_url = extract_instagram_url_from_html(rendered_html)
             if not lead.email:
                 lead.email = find_email(rendered_html)
-            if not lead.ad_pixels:
+            if not is_platform and not lead.ad_pixels:
                 pixels = detect_pixels(rendered_html)
                 summary = pixel_summary(pixels)
                 if summary:

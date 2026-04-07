@@ -71,10 +71,10 @@ def main() -> None:
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
 
+    final_file      = str(output_dir / f"{slug}.csv")
+    # Intermediate files — cleaned up after pipeline completes
     leads_file      = str(output_dir / f"{slug}-leads.csv")
-    prefetched_file = str(output_dir / f"{slug}-leads-prefetched.csv")
-    ads_file        = str(output_dir / f"{slug}-leads-prefetched-ads.csv")
-    enriched_file   = ads_file
+    prefetched_file = str(output_dir / f"{slug}-prefetched.csv")
 
     py = sys.executable
     pipeline_start = time.time()
@@ -112,29 +112,25 @@ def main() -> None:
     else:
         if not Path(prefetched_file).exists():
             prefetched_file = leads_file
-            enriched_file = leads_file
         print(f"[pipeline] Skipping prefetch — using {prefetched_file}")
 
-    # --- Stage 3: Ad Check (pixel-based, instant) ---
+    # --- Stage 3: Ad Check (pixel-based, instant) → final output ---
     if not args.skip_ads:
-        cmd = [py, "ad_check.py", "--input", prefetched_file]
+        cmd = [py, "ad_check.py", "--input", prefetched_file, "--output", final_file]
         rc = run_step("ad_check", cmd)
         stages_run.append(("ad_check", rc))
         if rc != 0:
             print(f"[pipeline] Ad check failed — aborting.", file=sys.stderr)
             sys.exit(rc)
-        if not Path(ads_file).exists():
-            print(f"[pipeline] No ads file produced — no leads running ads found.")
+        if not Path(final_file).exists():
+            print(f"[pipeline] No output — no leads running ads found.")
             sys.exit(0)
     else:
-        if not Path(ads_file).exists():
-            print(f"[pipeline] --skip-ads set but {ads_file} not found.", file=sys.stderr)
-            sys.exit(1)
-        print(f"[pipeline] Skipping ad_check — using {ads_file}")
+        print(f"[pipeline] Skipping ad_check.")
 
     # --- Stage 4: Enrich (only on leads running ads) ---
     if not args.skip_enrich:
-        cmd = [py, "enrich.py", "--input", enriched_file,
+        cmd = [py, "enrich.py", "--input", final_file,
                "--workers", str(args.enrich_workers), "--model", args.model]
         rc = run_step("enrich", cmd)
         stages_run.append(("enrich", rc))
@@ -143,15 +139,19 @@ def main() -> None:
     else:
         print(f"[pipeline] Skipping enrich.")
 
+    # Clean up intermediate files
+    for tmp in (leads_file, prefetched_file):
+        p = Path(tmp)
+        if p.exists():
+            p.unlink()
+
     total = time.time() - pipeline_start
     print(f"\n{'='*60}")
     print(f"  PIPELINE COMPLETE — {total:.1f}s total")
     for name, rc in stages_run:
         status = "OK" if rc == 0 else f"FAILED ({rc})"
         print(f"    {name:12s} {status}")
-    print(f"\n  Leads:       {leads_file}")
-    print(f"  Prefetched:  {prefetched_file}")
-    print(f"  Ads + owner: {ads_file}")
+    print(f"\n  Output: {final_file}")
     print(f"{'='*60}\n")
 
 

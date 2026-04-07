@@ -20,20 +20,14 @@ if _env_path.exists():
 
 SERPER_MAPS_URL = "https://google.serper.dev/maps"
 
-# Balanced niche coverage — broad gym queries first, then targeted niches.
-# 9 queries × up to 3 pages = 27 API calls per city.
+# Focused queries — broad terms catch 80%+ of leads, niches add the rest.
+# 5 queries × up to 3 pages = 15 API calls per city.
 GYM_QUERIES = [
-    # Broad — these catch the most generic gyms and fitness studios
     "gym near me",
     "fitness studio",
     "fitness center",
-    # Niche verticals
     "yoga studio",
     "pilates barre studio",
-    "martial arts gym",
-    "bootcamp fitness",
-    "personal training studio",
-    "cycling spinning studio",
 ]
 
 RESULTS_PER_PAGE = 20

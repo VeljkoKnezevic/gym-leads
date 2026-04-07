@@ -156,6 +156,14 @@ _IG_SKIP_SLUGS = {
     "sharedfiles", "graphql", "static",
 }
 
+# Platform / SaaS slugs — these are the website builder's own page, not the gym's
+_PLATFORM_SLUGS = {
+    "wix", "wixsite", "mindbody", "mindbodyonline", "mindbodybusiness",
+    "squarespace", "godaddy", "wordpress", "weebly", "shopify",
+    "zenplanner", "glofox", "clubready", "wodify", "pushpress",
+    "gymdesk", "pike13", "marianaiframes",
+}
+
 
 def fetch_raw_html(url: str) -> str:
     """Fetch a URL and return raw HTML. Returns empty string on any error."""
@@ -191,6 +199,10 @@ def extract_facebook_url_from_html(html: str) -> str:
             if pid:
                 return f"https://www.facebook.com/profile.php?id={pid}"
             continue  # profile.php with no id is useless
+        # Skip platform/SaaS pages (e.g. facebook.com/wix, facebook.com/mindbodybusiness)
+        top_slug = path.split("/")[0].lower()
+        if top_slug in _PLATFORM_SLUGS:
+            continue
         return parsed._replace(scheme="https", fragment="", query="").geturl()
     return ""
 
@@ -206,7 +218,7 @@ def extract_instagram_url_from_html(html: str) -> str:
     )
     for slug in matches:
         clean = slug.rstrip("./").lower()
-        if clean not in _IG_SKIP_SLUGS and len(clean) >= 3:
+        if clean not in _IG_SKIP_SLUGS and clean not in _PLATFORM_SLUGS and len(clean) >= 3:
             return f"https://www.instagram.com/{slug}"
     return ""
 

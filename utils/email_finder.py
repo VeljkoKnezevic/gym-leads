@@ -31,6 +31,11 @@ _NOISE_DOMAINS = {
     "mailchimp.com", "constantcontact.com", "hubspot.com",
 }
 
+# Image/asset suffixes that get matched by the email regex (e.g. icon@4x-2.png)
+_IMAGE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".bmp", ".tiff",
+}
+
 _EMAIL_RE = re.compile(
     r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
     re.ASCII,
@@ -105,6 +110,13 @@ def find_email(html: str, owner_name: str = "") -> str:
         except ValueError:
             return
         if _is_generic(prefix) or _is_noise_domain(domain):
+            return
+        # Skip image/asset filenames that look like emails (e.g. icon@4x-2.png)
+        full_lower = email.lower()
+        if any(full_lower.endswith(ext) for ext in _IMAGE_EXTENSIONS):
+            return
+        # Also skip if domain part looks like a resolution (e.g. 4x-2.png)
+        if re.search(r'\d+x', domain):
             return
         # Skip placeholder/example emails
         if prefix in ("user", "name", "email", "your", "youremail",

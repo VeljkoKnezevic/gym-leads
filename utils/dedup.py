@@ -116,19 +116,14 @@ def _merge_leads(existing: Lead, new: Lead) -> Lead:
 
 
 # Corporate/franchise chains to exclude — can't sell to these yet
+# Only truly corporate-owned chains (no local franchise owner to contact).
+# Franchise brands like OTF, Gold's, F45, etc. are kept — they have local owners.
 _CORPORATE_NAMES = [
-    "planet fitness", "la fitness", "24 hour fitness", "life time fitness",
-    "equinox", "soulcycle", "barrys bootcamp", "golds gym", "crunch fitness",
-    "world gym", "bally total fitness", "corepower yoga", "chuze fitness",
-    "eos fitness", "in-shape health clubs", "mountainside fitness",
-    "club pilates", "cyclebar", "stretchlab", "yogasix", "row house",
-    "akt", "stride running", "rumble boxing", "bft", "body fit training",
-    "lindora", "pure barre", "orangetheory fitness", "solidcore",
-    "burn boot camp", "9round", "snap fitness", "ufc gym",
-    "title boxing club", "hotworx", "retro fitness", "workout anytime",
-    "the bar method", "barre3", "ymca", "ywca", "jcc",
-    "jewish community center", "hospital fitness", "university recreation",
-    "municipal recreation",
+    "equinox", "soulcycle", "la fitness", "life time fitness",
+    "24 hour fitness", "planet fitness", "chuze fitness",
+    "eos fitness", "in-shape health clubs",
+    "ymca", "ywca", "jcc", "jewish community center",
+    "hospital fitness", "university recreation", "municipal recreation",
 ]
 
 

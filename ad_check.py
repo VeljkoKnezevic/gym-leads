@@ -27,11 +27,15 @@ from utils.geo import STATE_ABBR, ABBR_TO_STATE
 def main() -> None:
     parser = argparse.ArgumentParser(description="Check gym leads for ads via pixel detection")
     parser.add_argument("--input", required=True, help="Input CSV path")
+    parser.add_argument("--output", help="Output CSV path (default: {input_stem}-ads.csv)")
     args = parser.parse_args()
 
-    stem = Path(args.input).stem
-    parent = Path(args.input).parent
-    ads_output = str(parent / f"{stem}-ads.csv")
+    if args.output:
+        ads_output = args.output
+    else:
+        stem = Path(args.input).stem
+        parent = Path(args.input).parent
+        ads_output = str(parent / f"{stem}-ads.csv")
 
     leads = read_leads_csv(args.input)
 

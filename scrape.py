@@ -20,17 +20,17 @@ if _env_path.exists():
 from utils.geo import geocode_city, STATE_ABBR
 from utils.dedup import deduplicate, filter_corporate
 from utils.csv_writer import write_leads_csv
-from scrapers import MindBodyScraper, CrossFitScraper, SerpApiScraper, HyroxScraper, ClassPassScraper
+from scrapers import CrossFitScraper, SerpApiScraper, HyroxScraper, ClassPassScraper
 
 SCRAPER_MAP = {
-    "mindbody": MindBodyScraper,
+    # "mindbody": MindBodyScraper,  # disabled — returns platform URLs, not real gym sites
     "crossfit": CrossFitScraper,
     "google_maps": SerpApiScraper,
     "hyrox": HyroxScraper,
     "classpass": ClassPassScraper,
 }
 
-ALL_SOURCES = ["mindbody", "crossfit", "google_maps", "hyrox"]  # classpass excluded (requires US IP)
+ALL_SOURCES = ["crossfit", "google_maps", "hyrox"]  # classpass excluded (requires US IP)
 
 
 def run_scraper(source: str, scraper_cls, geo: dict, headless: bool, enrich: bool = True):
