@@ -20,11 +20,9 @@ if hasattr(sys.stdout, "reconfigure"):
 from scrapers.base import Lead, CSV_COLUMNS
 from utils.csv_writer import read_leads_csv, write_leads_csv
 from utils.website_fetcher import fetch_website_text
-from utils.website_resolver import resolve_website
 from utils.ollama_client import find_owner
 from utils.name_validator import validate_owner_name
 from utils.cache import get_cache_path, DEFAULT_CACHE_DIR
-from utils.email_finder import find_email
 
 
 
@@ -40,19 +38,13 @@ def _get_content(lead: Lead, url: str, cache_dir: str) -> str:
 def _enrich_lead(lead: Lead, model: str, host: str, confidence_threshold: float,
                  cache_dir: str = DEFAULT_CACHE_DIR) -> Lead:
     """Multi-strategy enrichment pipeline for a single lead."""
-    original_url = lead.website
     strategy_used = "none"
-
-    # Step 1: Resolve platform URL to real website
-    resolved_url = resolve_website(original_url, lead.name)
-    url_was_resolved = resolved_url != original_url
-
-    # Step 2: Try website text extraction + LLM on resolved URL (prefer cache)
     best_name = "Unknown"
     best_confidence = 0.0
 
-    if resolved_url:
-        content = _get_content(lead, resolved_url, cache_dir)
+    # Step 1: Try website text extraction + LLM (prefer cache)
+    if lead.website:
+        content = _get_content(lead, lead.website, cache_dir)
         if content.strip():
             name, confidence = find_owner(
                 content,
@@ -66,27 +58,9 @@ def _enrich_lead(lead: Lead, model: str, host: str, confidence_threshold: float,
             if name and name != "Unknown" and confidence >= confidence_threshold:
                 best_name = name
                 best_confidence = confidence
-                strategy_used = "resolved_url" if url_was_resolved else "direct_url"
+                strategy_used = "direct_url"
 
-    # Step 3: If confidence is low and we resolved a URL, also try the original platform URL
-    if best_confidence < 0.6 and url_was_resolved and original_url:
-        content = fetch_website_text(original_url)  # platform URL — no cache for this
-        if content.strip():
-            name, confidence = find_owner(
-                content,
-                gym_name=lead.name,
-                gym_type=lead.type,
-                city=lead.city,
-                state=lead.state,
-                model=model,
-                host=host,
-            )
-            if name and name != "Unknown" and confidence > best_confidence:
-                best_name = name
-                best_confidence = confidence
-                strategy_used = "platform_url_fallback"
-
-    # Step 4: Final validation
+    # Step 2: Final validation
     if best_name and best_name != "Unknown":
         is_valid, reason = validate_owner_name(best_name, lead.name, lead.type)
         if not is_valid:
@@ -95,18 +69,9 @@ def _enrich_lead(lead: Lead, model: str, host: str, confidence_threshold: float,
             best_confidence = 0.0
             strategy_used = "rejected"
 
-    # Step 5: Set owner results
+    # Step 3: Set owner results
     lead.owner = best_name if best_name != "Unknown" else ""
     lead.owner_confidence = str(best_confidence) if best_confidence > 0 else ""
-
-    # Step 6: Try to upgrade email to owner-name-matching one (if owner found)
-    if best_name and best_name != "Unknown":
-        cache_file = get_cache_path(lead, cache_dir)
-        if cache_file.exists():
-            cached_text = cache_file.read_text(encoding="utf-8")
-            owner_email = find_email(cached_text, owner_name=best_name)
-            if owner_email:
-                lead.email = owner_email
 
     status = f"owner={best_name!r} conf={best_confidence:.2f} via={strategy_used}"
     print(f"  [enrich] {lead.name!r} -> {status}")

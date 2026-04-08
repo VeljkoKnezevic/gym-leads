@@ -40,7 +40,6 @@ def read_leads_csv(path: str) -> list[Lead]:
                 owner_confidence=row.get("owner_confidence", ""),
                 facebook_url=row.get("facebook_url", ""),
                 instagram_url=row.get("instagram_url", ""),
-                email=row.get("email", ""),
                 running_ads=row.get("running_ads", ""),
                 ad_pixels=row.get("ad_pixels", ""),
             ))

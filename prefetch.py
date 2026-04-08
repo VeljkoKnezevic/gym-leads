@@ -38,7 +38,7 @@ from utils.website_fetcher import (
     _extract_structured_data,
 )
 from utils.cache import get_cache_path, DEFAULT_CACHE_DIR
-from utils.email_finder import find_email
+# from utils.email_finder import find_email  # disabled — using external services instead
 from utils.pixel_detect import detect_pixels, pixel_summary
 from utils.website_resolver import _is_platform_url
 
@@ -143,8 +143,6 @@ def _prefetch_lead(lead: Lead, cache_dir: str) -> tuple[Lead, str]:
             lead.facebook_url = extract_facebook_url_from_html(html_part)
         if not lead.instagram_url:
             lead.instagram_url = extract_instagram_url_from_html(html_part)
-        if not lead.email:
-            lead.email = find_email(html_part)
         if not is_platform and not lead.ad_pixels:
             pixels = detect_pixels(html_part)
             summary = pixel_summary(pixels)
@@ -163,8 +161,6 @@ def _prefetch_lead(lead: Lead, cache_dir: str) -> tuple[Lead, str]:
                 lead.facebook_url = extract_facebook_url_from_html(rendered_html)
             if not lead.instagram_url:
                 lead.instagram_url = extract_instagram_url_from_html(rendered_html)
-            if not lead.email:
-                lead.email = find_email(rendered_html)
             if not is_platform and not lead.ad_pixels:
                 pixels = detect_pixels(rendered_html)
                 summary = pixel_summary(pixels)
@@ -261,7 +257,7 @@ def main() -> None:
 
     total_fb = sum(1 for l in leads if l.facebook_url)
     total_ig = sum(1 for l in leads if l.instagram_url)
-    total_email = sum(1 for l in leads if l.email)
+    total_email = 0  # email finding disabled
     total_pixels = sum(1 for l in leads if l.ad_pixels)
     pct = lambda n: f"{100 * n // len(leads)}%" if leads else "0%"
 
@@ -270,7 +266,6 @@ def main() -> None:
         print(f"[prefetch]   {k}: {v}")
     print(f"[prefetch] Facebook URLs:  {total_fb}/{len(leads)} ({pct(total_fb)})")
     print(f"[prefetch] Instagram URLs: {total_ig}/{len(leads)} ({pct(total_ig)})")
-    print(f"[prefetch] Emails found:   {total_email}/{len(leads)} ({pct(total_email)})")
     print(f"[prefetch] Ad pixels:      {total_pixels}/{len(leads)} ({pct(total_pixels)})")
     print(f"[prefetch] Output CSV: {output_path}")
 

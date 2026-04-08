@@ -24,7 +24,6 @@ class Lead:
     owner_confidence: str = ""
     facebook_url: str = ""
     instagram_url: str = ""
-    email: str = ""
     running_ads: str = ""
     ad_pixels: str = ""
 
@@ -33,7 +32,7 @@ class Lead:
 
 
 CSV_COLUMNS = ["name", "address", "city", "state", "phone", "website", "type", "source", "owner",
-               "owner_confidence", "facebook_url", "instagram_url", "email",
+               "owner_confidence", "facebook_url", "instagram_url",
                "running_ads", "ad_pixels"]
 
 
