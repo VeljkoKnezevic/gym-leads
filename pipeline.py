@@ -1,11 +1,11 @@
-"""Full gym lead pipeline: scrape → prefetch → ad_check → enrich.
+"""Full gym lead pipeline: scrape → prefetch → ad_check → (optional) enrich.
 
 Ad check uses pixel detection (instant, no browser needed) to filter
-leads running ads, then enrich only runs on that smaller set.
+leads running ads. Enrich is opt-in and only runs when --enrich is passed.
 
 Usage:
     python pipeline.py --city "Danbury, CT"
-    python pipeline.py --city "Danbury, CT" --skip-enrich
+    python pipeline.py --city "Danbury, CT" --enrich
     python pipeline.py --city "Danbury, CT" --workers 6
 """
 
@@ -57,8 +57,8 @@ def main() -> None:
                         help="Skip scrape step (use existing leads file)")
     parser.add_argument("--skip-prefetch", action="store_true",
                         help="Skip prefetch step")
-    parser.add_argument("--skip-enrich", action="store_true",
-                        help="Skip enrich step")
+    parser.add_argument("--enrich", action="store_true",
+                        help="Run enrich step (skipped by default)")
     parser.add_argument("--skip-ads", action="store_true",
                         help="Skip ad_check step")
     parser.add_argument("--headed", action="store_true",
@@ -128,8 +128,8 @@ def main() -> None:
     else:
         print(f"[pipeline] Skipping ad_check.")
 
-    # --- Stage 4: Enrich (only on leads running ads) ---
-    if not args.skip_enrich:
+    # --- Stage 4: Enrich (opt-in, only on leads running ads) ---
+    if args.enrich:
         cmd = [py, "enrich.py", "--input", final_file,
                "--workers", str(args.enrich_workers), "--model", args.model]
         rc = run_step("enrich", cmd)
@@ -137,7 +137,7 @@ def main() -> None:
         if rc != 0:
             print(f"[pipeline] Enrich failed.")
     else:
-        print(f"[pipeline] Skipping enrich.")
+        print(f"[pipeline] Skipping enrich (pass --enrich to enable).")
 
     # Clean up intermediate files
     for tmp in (leads_file, prefetched_file):

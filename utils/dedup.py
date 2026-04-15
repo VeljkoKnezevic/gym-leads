@@ -124,6 +124,7 @@ _CORPORATE_NAMES = [
     "eos fitness", "in-shape health clubs",
     "ymca", "ywca", "jcc", "jewish community center",
     "hospital fitness", "university recreation", "municipal recreation",
+    "pvolve", "p.volve",
 ]
 
 

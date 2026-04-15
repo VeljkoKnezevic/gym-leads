@@ -149,19 +149,22 @@ def _prefetch_lead(lead: Lead, cache_dir: str) -> tuple[Lead, str]:
             if summary:
                 lead.ad_pixels = summary
 
-    # --- Step 2: Playwright fallback if any field still missing ---
-    needs_pw = (not lead.facebook_url or not lead.instagram_url or not lead.email)
+    # --- Step 2: Playwright fallback if any field still missing or no pixels found ---
+    # Many sites load tracking pixels via JS, so we need a rendered version
+    # to catch those — not just for social links.
+    needs_pw = (not lead.facebook_url or not lead.instagram_url or not lead.ad_pixels)
     pw_used = False
 
-    if needs_pw:
+    if needs_pw and not is_platform:
         rendered_html = _render_with_playwright(lead.website)
         if rendered_html:
             pw_used = True
+            all_html_parts.append(rendered_html)
             if not lead.facebook_url:
                 lead.facebook_url = extract_facebook_url_from_html(rendered_html)
             if not lead.instagram_url:
                 lead.instagram_url = extract_instagram_url_from_html(rendered_html)
-            if not is_platform and not lead.ad_pixels:
+            if not lead.ad_pixels:
                 pixels = detect_pixels(rendered_html)
                 summary = pixel_summary(pixels)
                 if summary:
@@ -225,7 +228,7 @@ def main() -> None:
     print(f"[prefetch] Strategy: requests first, Playwright fallback for JS-heavy sites")
 
     stats: dict[str, int] = {}
-    original_state = {id(l): (l.facebook_url, l.instagram_url, l.email, l.ad_pixels) for l in leads}
+    original_state = {id(l): (l.facebook_url, l.instagram_url, l.ad_pixels) for l in leads}
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {
@@ -237,14 +240,12 @@ def main() -> None:
             try:
                 updated_lead, status = future.result()
                 stats[status] = stats.get(status, 0) + 1
-                orig_fb, orig_ig, orig_email, orig_pixels = original_state[id(orig_lead)]
+                orig_fb, orig_ig, orig_pixels = original_state[id(orig_lead)]
                 tags = []
                 if updated_lead.facebook_url and not orig_fb:
                     tags.append("FB")
                 if updated_lead.instagram_url and not orig_ig:
                     tags.append("IG")
-                if updated_lead.email and not orig_email:
-                    tags.append("email")
                 if updated_lead.ad_pixels and not orig_pixels:
                     tags.append(f"pixels:{updated_lead.ad_pixels}")
                 tag_str = f" [{', '.join(tags)}]" if tags else ""
