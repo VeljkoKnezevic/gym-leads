@@ -6,6 +6,7 @@ import re
 
 import requests
 
+from utils import llm_cache
 from utils.name_validator import validate_owner_name
 
 _PROMPT_TEMPLATE = """\
@@ -19,11 +20,7 @@ You are extracting the owner(s) or founder(s) of a local gym/fitness studio from
 ## Rules
 1. Find ALL LOCAL owners, operators, or founders of THIS specific gym location.
 2. For franchise gyms (F45, Orangetheory, Fit Body Boot Camp, CrossFit, etc.), find the LOCAL franchisee or studio owner(s) — NOT the corporate brand founder.
-3. Each name must be a full name (first + last). Do NOT include:
-   - A single first name only (e.g., "Mike")
-   - A trainer, coach, or instructor name (unless they are also an owner)
-   - The gym name itself
-   - A corporate executive or celebrity
+3. Each name must be a full name (first + last). Do NOT include a bare first name, a coach/trainer (unless also an owner), the gym name itself, or a corporate executive.
 4. If you cannot confidently identify any owner, return "Unknown".
 5. If there are multiple owners or co-founders, list ALL of them — one per line.
 
@@ -35,23 +32,10 @@ Website says: "Founded by Sarah Chen in 2019, Peak Fitness is a boutique gym..."
 [ANSWER]
 Sarah Chen
 
-Example 2 — Multiple owners:
-Website says: "Our Team: Mike Thompson - Co-Owner & Head Coach, Jamie Rivera - Co-Owner & Trainer..."
-[REASONING] Mike Thompson and Jamie Rivera are both listed as Co-Owners.
-[ANSWER]
-Mike Thompson
-Jamie Rivera
-
-Example 3 — Franchise (reject corporate founder):
+Example 2 — Franchise (reject corporate founder):
 Gym name: "F45 Training Danbury"
 Website mentions: "Rob Deutsch founded F45 in Australia..."
 [REASONING] Rob Deutsch is the corporate founder of the F45 brand, not the local franchise owner. No local owner is identified.
-[ANSWER]
-Unknown
-
-Example 4 — Only first name (reject):
-Website says: "Coach Mike runs the best workouts in town..."
-[REASONING] Only a first name "Mike" is given with no last name, and he's described as a coach, not an owner.
 [ANSWER]
 Unknown
 
@@ -92,10 +76,20 @@ def find_owner(
         state=state or "",
     )
 
+    cached = llm_cache.get(model, prompt)
+    if cached is not None:
+        return cached
+
     try:
         resp = requests.post(
             f"{host}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "think": False,
+                "options": {"num_predict": 256},
+            },
             timeout=90,
         )
         resp.raise_for_status()
@@ -116,10 +110,12 @@ def find_owner(
             valid_names.append(name)
 
         if not valid_names:
+            llm_cache.put(model, prompt, "Unknown", 0.0)
             return "Unknown", 0.0
 
         combined = ", ".join(valid_names)
         confidence = _compute_confidence(combined, reasoning, gym_name, gym_type)
+        llm_cache.put(model, prompt, combined, confidence)
         return combined, confidence
 
     except Exception:
@@ -148,7 +144,16 @@ def _parse_response(raw: str) -> tuple[list[str], str]:
         # Each non-empty line is a candidate name
         for line in answer_block.splitlines():
             line = line.strip().strip("-•*").strip()
-            if line:
+            if not line:
+                continue
+            # Split comma-separated names on a single line
+            # e.g. "Chris Douglass, Libby Douglass"
+            if "," in line and not line.lower().startswith("unknown"):
+                for part in line.split(","):
+                    part = part.strip()
+                    if part:
+                        names.append(part)
+            else:
                 names.append(line)
     else:
         # Fallback: treat the whole response as a single name attempt

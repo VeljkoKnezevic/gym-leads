@@ -99,13 +99,14 @@ def _merge_leads(existing: Lead, new: Lead) -> Lead:
         city=existing.city or new.city,
         state=existing.state or new.state,
         phone=existing.phone or new.phone,
+        email=existing.email or new.email,
         website=best_website,
         type=existing.type or new.type,
         source=existing.source,
         owner=existing.owner or new.owner,
         owner_confidence=existing.owner_confidence or new.owner_confidence,
         facebook_url=existing.facebook_url or new.facebook_url,
-        ad_pixels=existing.ad_pixels or new.ad_pixels,
+        gym_category=existing.gym_category or new.gym_category,
     )
     # Combine sources (e.g., "mindbody, crossfit")
     existing_sources = set(s.strip() for s in existing.source.split(","))
@@ -122,6 +123,7 @@ _CORPORATE_NAMES = [
     "equinox", "soulcycle", "la fitness", "life time fitness",
     "24 hour fitness", "planet fitness", "chuze fitness",
     "eos fitness", "in-shape health clubs",
+    "puregym", "crunch fitness", "healthtrax",
     "ymca", "ywca", "jcc", "jewish community center",
     "hospital fitness", "university recreation", "municipal recreation",
     "pvolve", "p.volve",
@@ -130,7 +132,9 @@ _CORPORATE_NAMES = [
 
 def _is_corporate(name: str) -> bool:
     """Check if a gym name matches a corporate/franchise chain."""
-    n = re.sub(r"[^a-z0-9\s]", "", name.lower().strip())
+    import unicodedata
+    n = unicodedata.normalize("NFKD", name)          # ō → o + combining macron
+    n = re.sub(r"[^a-z0-9\s]", "", n.lower().strip()) # strip non-ascii + punctuation
     n = re.sub(r"\s+", " ", n).strip()
     for corp in _CORPORATE_NAMES:
         if corp in n or n in corp:

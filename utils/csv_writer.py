@@ -33,6 +33,7 @@ def read_leads_csv(path: str) -> list[Lead]:
                 city=row.get("city", ""),
                 state=row.get("state", ""),
                 phone=row.get("phone", ""),
+                email=row.get("email", ""),
                 website=row.get("website", ""),
                 type=row.get("type", ""),
                 source=row.get("source", ""),
@@ -40,8 +41,7 @@ def read_leads_csv(path: str) -> list[Lead]:
                 owner_confidence=row.get("owner_confidence", ""),
                 facebook_url=row.get("facebook_url", ""),
                 instagram_url=row.get("instagram_url", ""),
-                running_ads=row.get("running_ads", ""),
-                ad_pixels=row.get("ad_pixels", ""),
+                gym_category=row.get("gym_category", ""),
             ))
     return leads
 

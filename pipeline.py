@@ -1,11 +1,11 @@
-"""Full gym lead pipeline: scrape → prefetch → ad_check → (optional) enrich.
+"""Full gym lead pipeline: scrape → prefetch → enrich → categorize → reviews.
 
-Ad check uses pixel detection (instant, no browser needed) to filter
-leads running ads. Enrich is opt-in and only runs when --enrich is passed.
+Uses gemma3:27b for structured extraction (owner names) and
+qwen3:14b for creative tasks (gym category, review snippets).
 
 Usage:
     python pipeline.py --city "Danbury, CT"
-    python pipeline.py --city "Danbury, CT" --enrich
+    python pipeline.py --city "Danbury, CT" --skip-enrich --skip-reviews
     python pipeline.py --city "Danbury, CT" --workers 6
 """
 
@@ -49,18 +49,24 @@ def main() -> None:
     )
     parser.add_argument("--workers", type=int, default=4,
                         help="Workers for prefetch (default: 4)")
-    parser.add_argument("--enrich-workers", type=int, default=2,
-                        help="Workers for enrich step (default: 2)")
-    parser.add_argument("--model", default="gpt-oss:20b",
-                        help="Ollama model for enrich (default: gpt-oss:20b)")
+    parser.add_argument("--enrich-workers", type=int, default=4,
+                        help="Workers for enrich step (default: 4)")
+    parser.add_argument("--enrich-model", default="qwen3:14b",
+                        help="Ollama model for owner extraction (default: qwen3:14b)")
+    parser.add_argument("--creative-model", default="qwen3:14b",
+                        help="Ollama model for categorize + reviews (default: qwen3:14b)")
     parser.add_argument("--skip-scrape", action="store_true",
                         help="Skip scrape step (use existing leads file)")
     parser.add_argument("--skip-prefetch", action="store_true",
                         help="Skip prefetch step")
-    parser.add_argument("--enrich", action="store_true",
-                        help="Run enrich step (skipped by default)")
-    parser.add_argument("--skip-ads", action="store_true",
-                        help="Skip ad_check step")
+    parser.add_argument("--skip-enrich", action="store_true",
+                        help="Skip enrich step")
+    parser.add_argument("--skip-categorize", action="store_true",
+                        help="Skip categorize step")
+    # Reviews stage disabled — kept for re-enable:
+    # parser.add_argument("--skip-reviews", action="store_true", help="Skip reviews step")
+    # parser.add_argument("--review-workers", type=int, default=2,
+    #                     help="Workers for reviews step (default: 2)")
     parser.add_argument("--headed", action="store_true",
                         help="Run browsers in headed mode (scrape step)")
     parser.add_argument("--sequential", action="store_true",
@@ -72,9 +78,8 @@ def main() -> None:
     output_dir.mkdir(exist_ok=True)
 
     final_file      = str(output_dir / f"{slug}.csv")
-    # Intermediate files — cleaned up after pipeline completes
+    # Intermediate file — cleaned up after pipeline completes
     leads_file      = str(output_dir / f"{slug}-leads.csv")
-    prefetched_file = str(output_dir / f"{slug}-prefetched.csv")
 
     py = sys.executable
     pipeline_start = time.time()
@@ -100,50 +105,62 @@ def main() -> None:
             sys.exit(1)
         print(f"[pipeline] Skipping scrape — using {leads_file}")
 
-    # --- Stage 2: Prefetch (websites, socials, emails, pixel detection) ---
+    # --- Stage 2: Prefetch (websites, socials) ---
     if not args.skip_prefetch:
         cmd = [py, "prefetch.py", "--input", leads_file,
-               "--output", prefetched_file, "--workers", str(args.workers)]
+               "--output", final_file, "--workers", str(args.workers)]
         rc = run_step("prefetch", cmd)
         stages_run.append(("prefetch", rc))
         if rc != 0:
             print(f"[pipeline] Prefetch failed — aborting.", file=sys.stderr)
             sys.exit(rc)
     else:
-        if not Path(prefetched_file).exists():
-            prefetched_file = leads_file
-        print(f"[pipeline] Skipping prefetch — using {prefetched_file}")
-
-    # --- Stage 3: Ad Check (pixel-based, instant) → final output ---
-    if not args.skip_ads:
-        cmd = [py, "ad_check.py", "--input", prefetched_file, "--output", final_file]
-        rc = run_step("ad_check", cmd)
-        stages_run.append(("ad_check", rc))
-        if rc != 0:
-            print(f"[pipeline] Ad check failed — aborting.", file=sys.stderr)
-            sys.exit(rc)
         if not Path(final_file).exists():
-            print(f"[pipeline] No output — no leads running ads found.")
-            sys.exit(0)
-    else:
-        print(f"[pipeline] Skipping ad_check.")
+            import shutil
+            shutil.copy2(leads_file, final_file)
+        print(f"[pipeline] Skipping prefetch — using {final_file}")
 
-    # --- Stage 4: Enrich (opt-in, only on leads running ads) ---
-    if args.enrich:
+    # --- Stage 3: Enrich — owner names (gemma3:27b) ---
+    if not args.skip_enrich:
         cmd = [py, "enrich.py", "--input", final_file,
-               "--workers", str(args.enrich_workers), "--model", args.model]
+               "--workers", str(args.enrich_workers),
+               "--model", args.enrich_model]
         rc = run_step("enrich", cmd)
         stages_run.append(("enrich", rc))
         if rc != 0:
             print(f"[pipeline] Enrich failed.")
     else:
-        print(f"[pipeline] Skipping enrich (pass --enrich to enable).")
+        print(f"[pipeline] Skipping enrich.")
+
+    # --- Stage 4: Categorize — gym type (qwen3:14b) ---
+    if not args.skip_categorize:
+        cmd = [py, "categorize.py", "--input", final_file,
+               "--workers", str(args.enrich_workers),
+               "--model", args.creative_model]
+        rc = run_step("categorize", cmd)
+        stages_run.append(("categorize", rc))
+        if rc != 0:
+            print(f"[pipeline] Categorize failed.")
+    else:
+        print(f"[pipeline] Skipping categorize.")
+
+    # --- Stage 5: Reviews — DISABLED. Strategy changed; Serper budget moved to enrichment.
+    # To re-enable: uncomment below and re-add reviews-related CLI flags + reviews.py run.
+    # if not args.skip_reviews:
+    #     cmd = [py, "reviews.py", "--input", final_file,
+    #            "--workers", str(args.review_workers),
+    #            "--model", args.creative_model]
+    #     rc = run_step("reviews", cmd)
+    #     stages_run.append(("reviews", rc))
+    #     if rc != 0:
+    #         print(f"[pipeline] Reviews failed.")
+    # else:
+    #     print(f"[pipeline] Skipping reviews.")
 
     # Clean up intermediate files
-    for tmp in (leads_file, prefetched_file):
-        p = Path(tmp)
-        if p.exists():
-            p.unlink()
+    p = Path(leads_file)
+    if p.exists():
+        p.unlink()
 
     total = time.time() - pipeline_start
     print(f"\n{'='*60}")

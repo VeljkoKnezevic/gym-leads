@@ -1,8 +1,17 @@
-"""Enrich gym lead CSVs with owner names via a local Ollama model.
+"""Enrich gym lead CSVs with owner names via web search + local Ollama model.
+
+Strategy:
+  1. Try gym's own website (cached text from prefetch step, truncated to 5000 chars)
+  2. If that fails, cascade Serper queries to save credits:
+     Tier 1 (single query): "{gym}" "{city}" owner OR founder
+     Tier 2 (3 queries in parallel, only if tier 1 yields no owner):
+       - "{gym}" founder OR "founded by"
+       - site:linkedin.com/in "{gym}"
+       - site:facebook.com "{gym}" {city}
 
 Usage:
     python enrich.py --input output/ashburn-va-leads.csv
-    python enrich.py --input leads.csv --output leads-enriched.csv --workers 2 --model mistral:7b
+    python enrich.py --input leads.csv --output leads-enriched.csv --workers 2 --model qwen3:14b
 """
 
 from __future__ import annotations
@@ -12,6 +21,10 @@ import os
 import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+import requests
+from bs4 import BeautifulSoup
 
 # Windows terminals default to cp1252 which chokes on non-ASCII gym names
 if hasattr(sys.stdout, "reconfigure"):
@@ -24,7 +37,29 @@ from utils.ollama_client import find_owner
 from utils.name_validator import validate_owner_name
 from utils.cache import get_cache_path, DEFAULT_CACHE_DIR
 
+# Load .env if present
+_env_path = Path(__file__).resolve().parent / ".env"
+if _env_path.exists():
+    for _line in _env_path.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
 
+SERPER_SEARCH_URL = "https://google.serper.dev/search"
+WEBSITE_CONTENT_CHAR_LIMIT = 5000  # Truncate LLM input — owner info is ~always in the first ~3-5KB
+
+
+def _build_query_ladder(lead: Lead) -> list[tuple[str, str]]:
+    """Return a list of (label, query) pairs to try in order until one yields an owner."""
+    name = lead.name
+    city = lead.city
+    return [
+        ("owner_city",  f'"{name}" "{city}" owner OR founder OR "owned by"'),
+        ("founded_by",  f'"{name}" founder OR "founded by" OR "co-founder"'),
+        ("linkedin",    f'site:linkedin.com/in "{name}"'),
+        ("facebook",    f'site:facebook.com "{name}" {city}'),
+    ]
 
 
 def _get_content(lead: Lead, url: str, cache_dir: str) -> str:
@@ -35,7 +70,66 @@ def _get_content(lead: Lead, url: str, cache_dir: str) -> str:
     return fetch_website_text(url)
 
 
-def _enrich_lead(lead: Lead, model: str, host: str, confidence_threshold: float,
+def _run_serper_query(query: str, api_key: str) -> str:
+    """Run one Serper query, return concatenated snippets + KG text, or empty string."""
+    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+    try:
+        resp = requests.post(
+            SERPER_SEARCH_URL,
+            json={"q": query, "num": 5},
+            headers=headers,
+            timeout=15,
+        )
+        data = resp.json()
+    except Exception as e:
+        print(f"  [enrich] Serper query failed ({query[:60]!r}): {e}")
+        return ""
+
+    chunks: list[str] = []
+
+    kg = data.get("knowledgeGraph", {})
+    if kg:
+        desc = kg.get("description", "")
+        attrs = kg.get("attributes", {})
+        if desc:
+            chunks.append(f"[KNOWLEDGE GRAPH] {desc}")
+        for k, v in attrs.items():
+            chunks.append(f"{k}: {v}")
+
+    for result in data.get("organic", [])[:5]:
+        title = result.get("title", "")
+        snippet = result.get("snippet", "")
+        if snippet:
+            chunks.append(f"[SEARCH RESULT] {title}: {snippet}")
+
+    for paa in data.get("peopleAlsoAsk", [])[:3]:
+        snippet = paa.get("snippet", "")
+        if snippet:
+            chunks.append(f"[PAA] {snippet}")
+
+    return "\n".join(chunks)
+
+
+def _fetch_serper_snippets(ladder: list[tuple[str, str]], api_key: str) -> str:
+    """Fire the given (label, query) pairs in parallel and return combined, labeled snippets."""
+    if not ladder:
+        return ""
+    chunks: list[str] = []
+    with ThreadPoolExecutor(max_workers=len(ladder)) as ex:
+        futures = {ex.submit(_run_serper_query, q, api_key): label for label, q in ladder}
+        for fut in as_completed(futures):
+            label = futures[fut]
+            try:
+                text = fut.result()
+            except Exception:
+                text = ""
+            if text.strip():
+                chunks.append(f"=== {label.upper()} ===\n{text}")
+    return "\n\n".join(chunks)
+
+
+def _enrich_lead(lead: Lead, model: str, serper_model: str, host: str,
+                 confidence_threshold: float,
                  cache_dir: str = DEFAULT_CACHE_DIR) -> Lead:
     """Multi-strategy enrichment pipeline for a single lead."""
     strategy_used = "none"
@@ -47,7 +141,7 @@ def _enrich_lead(lead: Lead, model: str, host: str, confidence_threshold: float,
         content = _get_content(lead, lead.website, cache_dir)
         if content.strip():
             name, confidence = find_owner(
-                content,
+                content[:WEBSITE_CONTENT_CHAR_LIMIT],
                 gym_name=lead.name,
                 gym_type=lead.type,
                 city=lead.city,
@@ -58,18 +152,35 @@ def _enrich_lead(lead: Lead, model: str, host: str, confidence_threshold: float,
             if name and name != "Unknown" and confidence >= confidence_threshold:
                 best_name = name
                 best_confidence = confidence
-                strategy_used = "direct_url"
+                strategy_used = "website"
 
-    # Step 2: Final validation
-    if best_name and best_name != "Unknown":
-        is_valid, reason = validate_owner_name(best_name, lead.name, lead.type)
-        if not is_valid:
-            print(f"  [enrich] Final validation rejected '{best_name}' for '{lead.name}': {reason}")
-            best_name = "Unknown"
-            best_confidence = 0.0
-            strategy_used = "rejected"
+    # Step 2: If website failed, cascade Serper queries — try the single
+    # highest-yield query first, only fire the other 3 if it comes up empty.
+    if best_name == "Unknown" or not best_name:
+        api_key = os.environ.get("SERPER_API_KEY", "")
+        if api_key:
+            full_ladder = _build_query_ladder(lead)
+            tiers = [("serper_tier1", full_ladder[:1]), ("serper_tier2", full_ladder[1:])]
+            for tier_label, tier_queries in tiers:
+                search_content = _fetch_serper_snippets(tier_queries, api_key)
+                if not search_content.strip():
+                    continue
+                name, confidence = find_owner(
+                    search_content,
+                    gym_name=lead.name,
+                    gym_type=lead.type,
+                    city=lead.city,
+                    state=lead.state,
+                    model=serper_model,
+                    host=host,
+                )
+                if name and name != "Unknown" and confidence >= confidence_threshold:
+                    best_name = name
+                    best_confidence = confidence
+                    strategy_used = tier_label
+                    break
 
-    # Step 3: Set owner results
+    # Step 3: Set owner results (individual names already validated in ollama_client)
     lead.owner = best_name if best_name != "Unknown" else ""
     lead.owner_confidence = str(best_confidence) if best_confidence > 0 else ""
 
@@ -83,8 +194,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Enrich gym leads with owner names via Ollama")
     parser.add_argument("--input", required=True, help="Input CSV path")
     parser.add_argument("--output", default="", help="Output CSV path (default: input file overwritten)")
-    parser.add_argument("--workers", type=int, default=2, help="Parallel workers (default: 2)")
-    parser.add_argument("--model", default="gpt-oss:20b", help="Ollama model (default: gpt-oss:20b)")
+    parser.add_argument("--workers", type=int, default=4, help="Parallel workers (default: 4)")
+    parser.add_argument("--model", default="qwen3:14b",
+                        help="Ollama model for website extraction (default: qwen3:14b)")
+    parser.add_argument("--serper-model", default="qwen3:8b",
+                        help="Ollama model for Serper-snippet extraction (default: qwen3:8b)")
     parser.add_argument("--host", default="http://localhost:11434", help="Ollama host")
     parser.add_argument("--confidence-threshold", type=float, default=0.4,
                         help="Minimum confidence to accept a name (default: 0.4)")
@@ -97,19 +211,19 @@ def main() -> None:
     leads = read_leads_csv(args.input)
 
     to_enrich: list[Lead] = []
-    skipped_no_website = 0
     skipped_already_done = 0
 
     for lead in leads:
         if lead.owner:
             skipped_already_done += 1
-        elif not lead.website:
-            skipped_no_website += 1
         else:
             to_enrich.append(lead)
 
+    has_serper = bool(os.environ.get("SERPER_API_KEY", ""))
     print(f"[enrich] {len(leads)} total leads — {len(to_enrich)} to enrich, "
-          f"{skipped_already_done} already enriched, {skipped_no_website} without website")
+          f"{skipped_already_done} already enriched")
+    print(f"[enrich] Strategy: website first ({args.model})"
+          f"{', then combined Serper ladder (' + args.serper_model + ')' if has_serper else ''}")
     print(f"[enrich] Confidence threshold: {args.confidence_threshold}")
 
     enriched_count = 0
@@ -118,7 +232,8 @@ def main() -> None:
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {
-            executor.submit(_enrich_lead, lead, args.model, args.host, args.confidence_threshold, args.cache_dir): lead
+            executor.submit(_enrich_lead, lead, args.model, args.serper_model,
+                            args.host, args.confidence_threshold, args.cache_dir): lead
             for lead in to_enrich
         }
         for future in as_completed(futures):
@@ -144,7 +259,6 @@ def main() -> None:
     print(f"[enrich] Newly enriched: {enriched_count}")
     print(f"[enrich] Unknown (no owner found): {unknown_count}")
     print(f"[enrich] Skipped (already done): {skipped_already_done}")
-    print(f"[enrich] Skipped (no website): {skipped_no_website}")
     print(f"[enrich] Total leads with owners: {total_with_owners}/{len(leads)} "
           f"({100*total_with_owners/len(leads):.0f}%)" if leads else "")
 

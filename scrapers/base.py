@@ -17,6 +17,7 @@ class Lead:
     city: str = ""
     state: str = ""
     phone: str = ""
+    email: str = ""
     website: str = ""
     type: str = ""
     source: str = ""
@@ -24,16 +25,14 @@ class Lead:
     owner_confidence: str = ""
     facebook_url: str = ""
     instagram_url: str = ""
-    running_ads: str = ""
-    ad_pixels: str = ""
+    gym_category: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-CSV_COLUMNS = ["name", "address", "city", "state", "phone", "website", "type", "source", "owner",
-               "owner_confidence", "facebook_url", "instagram_url",
-               "running_ads", "ad_pixels"]
+CSV_COLUMNS = ["name", "address", "city", "state", "phone", "email", "website", "type", "source",
+               "owner", "owner_confidence", "facebook_url", "instagram_url", "gym_category"]
 
 
 def normalize_phone(raw: str) -> str:
@@ -139,6 +138,18 @@ class BaseScraper(ABC):
         body_text = page.inner_text("body")
         match = re.search(r"(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})", body_text)
         return match.group(1).strip() if match else ""
+
+    @staticmethod
+    def extract_email(page: Page) -> str:
+        """Extract email from current page via mailto: link or regex fallback."""
+        mail_link = page.query_selector("a[href^='mailto:']")
+        if mail_link:
+            href = mail_link.get_attribute("href") or ""
+            # strip ?subject=... or other params
+            return href.replace("mailto:", "").split("?", 1)[0].strip()
+        body_text = page.inner_text("body")
+        match = re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", body_text)
+        return match.group(0).strip() if match else ""
 
     @staticmethod
     def human_delay(min_sec: float = 1.0, max_sec: float = 5.0):

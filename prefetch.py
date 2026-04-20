@@ -38,9 +38,6 @@ from utils.website_fetcher import (
     _extract_structured_data,
 )
 from utils.cache import get_cache_path, DEFAULT_CACHE_DIR
-# from utils.email_finder import find_email  # disabled — using external services instead
-from utils.pixel_detect import detect_pixels, pixel_summary
-from utils.website_resolver import _is_platform_url
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -116,10 +113,6 @@ def _prefetch_lead(lead: Lead, cache_dir: str) -> tuple[Lead, str]:
     if not lead.website:
         return lead, "no_website"
 
-    # --- Step 0: Check if this is a platform URL (mindbody, crossfit.com, etc.) ---
-    # Platform URLs get skipped for pixel detection (their pixels aren't the gym's)
-    is_platform = _is_platform_url(lead.website)
-
     cache_file = get_cache_path(lead, cache_dir)
     already_cached = cache_file.exists() and cache_file.stat().st_size > 100
 
@@ -136,26 +129,18 @@ def _prefetch_lead(lead: Lead, cache_dir: str) -> tuple[Lead, str]:
             if sub_html:
                 all_html_parts.append(sub_html)
 
-    # Extract FB/IG/email/pixels from ALL fetched pages
-    # Skip pixel detection on platform URLs — their pixels aren't the gym's
+    # Extract FB/IG from ALL fetched pages
     for html_part in all_html_parts:
         if not lead.facebook_url:
             lead.facebook_url = extract_facebook_url_from_html(html_part)
         if not lead.instagram_url:
             lead.instagram_url = extract_instagram_url_from_html(html_part)
-        if not is_platform and not lead.ad_pixels:
-            pixels = detect_pixels(html_part)
-            summary = pixel_summary(pixels)
-            if summary:
-                lead.ad_pixels = summary
 
-    # --- Step 2: Playwright fallback if any field still missing or no pixels found ---
-    # Many sites load tracking pixels via JS, so we need a rendered version
-    # to catch those — not just for social links.
-    needs_pw = (not lead.facebook_url or not lead.instagram_url or not lead.ad_pixels)
+    # --- Step 2: Playwright fallback if social links still missing ---
+    needs_pw = (not lead.facebook_url or not lead.instagram_url)
     pw_used = False
 
-    if needs_pw and not is_platform:
+    if needs_pw:
         rendered_html = _render_with_playwright(lead.website)
         if rendered_html:
             pw_used = True
@@ -164,11 +149,6 @@ def _prefetch_lead(lead: Lead, cache_dir: str) -> tuple[Lead, str]:
                 lead.facebook_url = extract_facebook_url_from_html(rendered_html)
             if not lead.instagram_url:
                 lead.instagram_url = extract_instagram_url_from_html(rendered_html)
-            if not lead.ad_pixels:
-                pixels = detect_pixels(rendered_html)
-                summary = pixel_summary(pixels)
-                if summary:
-                    lead.ad_pixels = summary
 
     # --- Step 3: Cache text content (reuse HTML already fetched in Step 1) ---
     if already_cached:
@@ -228,7 +208,7 @@ def main() -> None:
     print(f"[prefetch] Strategy: requests first, Playwright fallback for JS-heavy sites")
 
     stats: dict[str, int] = {}
-    original_state = {id(l): (l.facebook_url, l.instagram_url, l.ad_pixels) for l in leads}
+    original_state = {id(l): (l.facebook_url, l.instagram_url) for l in leads}
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {
@@ -240,14 +220,12 @@ def main() -> None:
             try:
                 updated_lead, status = future.result()
                 stats[status] = stats.get(status, 0) + 1
-                orig_fb, orig_ig, orig_pixels = original_state[id(orig_lead)]
+                orig_fb, orig_ig = original_state[id(orig_lead)]
                 tags = []
                 if updated_lead.facebook_url and not orig_fb:
                     tags.append("FB")
                 if updated_lead.instagram_url and not orig_ig:
                     tags.append("IG")
-                if updated_lead.ad_pixels and not orig_pixels:
-                    tags.append(f"pixels:{updated_lead.ad_pixels}")
                 tag_str = f" [{', '.join(tags)}]" if tags else ""
                 print(f"[prefetch] [{i}/{len(leads)}] {updated_lead.name!r} -> {status}{tag_str}")
             except Exception as e:
@@ -258,8 +236,6 @@ def main() -> None:
 
     total_fb = sum(1 for l in leads if l.facebook_url)
     total_ig = sum(1 for l in leads if l.instagram_url)
-    total_email = 0  # email finding disabled
-    total_pixels = sum(1 for l in leads if l.ad_pixels)
     pct = lambda n: f"{100 * n // len(leads)}%" if leads else "0%"
 
     print(f"\n[prefetch] === Summary ===")
@@ -267,7 +243,6 @@ def main() -> None:
         print(f"[prefetch]   {k}: {v}")
     print(f"[prefetch] Facebook URLs:  {total_fb}/{len(leads)} ({pct(total_fb)})")
     print(f"[prefetch] Instagram URLs: {total_ig}/{len(leads)} ({pct(total_ig)})")
-    print(f"[prefetch] Ad pixels:      {total_pixels}/{len(leads)} ({pct(total_pixels)})")
     print(f"[prefetch] Output CSV: {output_path}")
 
 

@@ -9,8 +9,8 @@ from .base import BaseScraper, Lead, USER_AGENT
 ENRICH_WORKERS = 5
 
 
-def _fetch_phone(url: str, headless: bool) -> str:
-    """Fetch phone from a CrossFit detail page using an isolated browser instance."""
+def _fetch_details(url: str, headless: bool) -> tuple[str, str]:
+    """Fetch (phone, email) from a CrossFit detail page using an isolated browser instance."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
         page = browser.new_page(user_agent=USER_AGENT)
@@ -25,9 +25,9 @@ def _fetch_phone(url: str, headless: bool) -> str:
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=15000)
             page.wait_for_timeout(2000)  # let React finish rendering phone/details
-            return BaseScraper.extract_phone(page)
+            return BaseScraper.extract_phone(page), BaseScraper.extract_email(page)
         except Exception:
-            return ""
+            return "", ""
         finally:
             browser.close()
 
@@ -105,21 +105,27 @@ class CrossFitScraper(BaseScraper):
         return leads
 
     def _enrich_phone_numbers(self, leads: list[Lead]):
-        """Visit CrossFit affiliate detail pages in parallel to grab phone numbers."""
+        """Visit CrossFit affiliate detail pages in parallel to grab phone + email."""
         to_enrich = [l for l in leads if l.website]
         print(f"  [crossfit] Enriching {len(to_enrich)} leads ({ENRICH_WORKERS} workers)...")
 
         with ThreadPoolExecutor(max_workers=ENRICH_WORKERS) as executor:
             futures = {
-                executor.submit(_fetch_phone, lead.website, self.headless): lead
+                executor.submit(_fetch_details, lead.website, self.headless): lead
                 for lead in to_enrich
             }
             for future in as_completed(futures):
                 lead = futures[future]
                 try:
-                    phone = future.result()
+                    phone, email = future.result()
                     if phone:
                         lead.phone = phone
-                        print(f"  [crossfit]   {lead.name}: {phone}")
+                    if email:
+                        lead.email = email
+                    if phone or email:
+                        bits = [f"phone={phone}"] if phone else []
+                        if email:
+                            bits.append(f"email={email}")
+                        print(f"  [crossfit]   {lead.name}: {', '.join(bits)}")
                 except Exception:
                     pass
