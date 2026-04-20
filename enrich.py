@@ -2,12 +2,8 @@
 
 Strategy:
   1. Try gym's own website (cached text from prefetch step, truncated to 5000 chars)
-  2. If that fails, cascade Serper queries to save credits:
-     Tier 1 (single query): "{gym}" "{city}" owner OR founder
-     Tier 2 (3 queries in parallel, only if tier 1 yields no owner):
-       - "{gym}" founder OR "founded by"
-       - site:linkedin.com/in "{gym}"
-       - site:facebook.com "{gym}" {city}
+  2. If that fails, fire a single Serper query:
+       "{gym}" "{city}" owner OR founder OR "owned by"
 
 Usage:
     python enrich.py --input output/ashburn-va-leads.csv
@@ -48,18 +44,6 @@ if _env_path.exists():
 
 SERPER_SEARCH_URL = "https://google.serper.dev/search"
 WEBSITE_CONTENT_CHAR_LIMIT = 5000  # Truncate LLM input — owner info is ~always in the first ~3-5KB
-
-
-def _build_query_ladder(lead: Lead) -> list[tuple[str, str]]:
-    """Return a list of (label, query) pairs to try in order until one yields an owner."""
-    name = lead.name
-    city = lead.city
-    return [
-        ("owner_city",  f'"{name}" "{city}" owner OR founder OR "owned by"'),
-        ("founded_by",  f'"{name}" founder OR "founded by" OR "co-founder"'),
-        ("linkedin",    f'site:linkedin.com/in "{name}"'),
-        ("facebook",    f'site:facebook.com "{name}" {city}'),
-    ]
 
 
 def _get_content(lead: Lead, url: str, cache_dir: str) -> str:
@@ -110,24 +94,6 @@ def _run_serper_query(query: str, api_key: str) -> str:
     return "\n".join(chunks)
 
 
-def _fetch_serper_snippets(ladder: list[tuple[str, str]], api_key: str) -> str:
-    """Fire the given (label, query) pairs in parallel and return combined, labeled snippets."""
-    if not ladder:
-        return ""
-    chunks: list[str] = []
-    with ThreadPoolExecutor(max_workers=len(ladder)) as ex:
-        futures = {ex.submit(_run_serper_query, q, api_key): label for label, q in ladder}
-        for fut in as_completed(futures):
-            label = futures[fut]
-            try:
-                text = fut.result()
-            except Exception:
-                text = ""
-            if text.strip():
-                chunks.append(f"=== {label.upper()} ===\n{text}")
-    return "\n\n".join(chunks)
-
-
 def _enrich_lead(lead: Lead, model: str, serper_model: str, host: str,
                  confidence_threshold: float,
                  cache_dir: str = DEFAULT_CACHE_DIR) -> Lead:
@@ -154,17 +120,13 @@ def _enrich_lead(lead: Lead, model: str, serper_model: str, host: str,
                 best_confidence = confidence
                 strategy_used = "website"
 
-    # Step 2: If website failed, cascade Serper queries — try the single
-    # highest-yield query first, only fire the other 3 if it comes up empty.
+    # Step 2: If website failed, fire a single Serper query.
     if best_name == "Unknown" or not best_name:
         api_key = os.environ.get("SERPER_API_KEY", "")
         if api_key:
-            full_ladder = _build_query_ladder(lead)
-            tiers = [("serper_tier1", full_ladder[:1]), ("serper_tier2", full_ladder[1:])]
-            for tier_label, tier_queries in tiers:
-                search_content = _fetch_serper_snippets(tier_queries, api_key)
-                if not search_content.strip():
-                    continue
+            query = f'"{lead.name}" "{lead.city}" owner OR founder OR "owned by"'
+            search_content = _run_serper_query(query, api_key)
+            if search_content.strip():
                 name, confidence = find_owner(
                     search_content,
                     gym_name=lead.name,
@@ -177,8 +139,7 @@ def _enrich_lead(lead: Lead, model: str, serper_model: str, host: str,
                 if name and name != "Unknown" and confidence >= confidence_threshold:
                     best_name = name
                     best_confidence = confidence
-                    strategy_used = tier_label
-                    break
+                    strategy_used = "serper"
 
     # Step 3: Set owner results (individual names already validated in ollama_client)
     lead.owner = best_name if best_name != "Unknown" else ""
@@ -223,7 +184,7 @@ def main() -> None:
     print(f"[enrich] {len(leads)} total leads — {len(to_enrich)} to enrich, "
           f"{skipped_already_done} already enriched")
     print(f"[enrich] Strategy: website first ({args.model})"
-          f"{', then combined Serper ladder (' + args.serper_model + ')' if has_serper else ''}")
+          f"{', then Serper (' + args.serper_model + ')' if has_serper else ''}")
     print(f"[enrich] Confidence threshold: {args.confidence_threshold}")
 
     enriched_count = 0
