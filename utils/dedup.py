@@ -1,4 +1,4 @@
-"""Name-similarity deduplication across sources."""
+"""Name and owner deduplication across sources."""
 
 import re
 from difflib import SequenceMatcher
@@ -83,6 +83,64 @@ def _is_name_match(a: str, b: str, threshold: float) -> bool:
     return False
 
 
+def _split_owner_names(owner: str) -> list[str]:
+    """Split an owner field into individual full-name strings."""
+    if not owner:
+        return []
+
+    value = owner.strip()
+    # Normalize common list separators while leaving name punctuation intact.
+    value = re.sub(r"\s+(?:and|&)\s+", ",", value, flags=re.IGNORECASE)
+    value = re.sub(r"[\n;]+", ",", value)
+    parts = [p.strip() for p in value.split(",")]
+    return [p for p in parts if p]
+
+
+def _normalize_owner_name(owner_name: str) -> str:
+    """Normalize one owner name for exact person matching."""
+    name = owner_name.lower().strip()
+    name = re.sub(r"\b(?:dr|mr|mrs|ms|miss|prof)\.?\s+", "", name)
+    name = re.sub(r"\b(?:jr|sr|ii|iii|iv)\.?\b", "", name)
+    name = re.sub(r"[^a-z\s'-]", " ", name)
+    name = re.sub(r"\s+", " ", name).strip()
+
+    parts = name.split()
+    if len(parts) < 2:
+        return ""
+    if any(len(part) == 1 for part in parts):
+        return ""
+    return " ".join(parts)
+
+
+def _owner_name_set(owner: str) -> set[str]:
+    """Return normalized individual owner names from an owner field."""
+    names: set[str] = set()
+    for part in _split_owner_names(owner):
+        normalized = _normalize_owner_name(part)
+        if normalized:
+            names.add(normalized)
+    return names
+
+
+def _prefer_owner(existing_owner: str, new_owner: str) -> str:
+    """Combine owner fields, preserving order and dropping duplicate people."""
+    if not existing_owner:
+        return new_owner
+    if not new_owner:
+        return existing_owner
+
+    seen: set[str] = set()
+    combined: list[str] = []
+    for owner in _split_owner_names(existing_owner) + _split_owner_names(new_owner):
+        normalized = _normalize_owner_name(owner)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        combined.append(owner)
+
+    return ", ".join(combined) if combined else existing_owner
+
+
 def _merge_leads(existing: Lead, new: Lead) -> Lead:
     """Merge two leads, preferring non-empty fields and combining sources."""
     # Prefer the real gym website over a platform URL (mindbody, crossfit.com, etc.)
@@ -95,6 +153,7 @@ def _merge_leads(existing: Lead, new: Lead) -> Lead:
 
     merged = Lead(
         name=existing.name or new.name,
+        first_company_name=existing.first_company_name or new.first_company_name,
         address=existing.address or new.address,
         city=existing.city or new.city,
         state=existing.state or new.state,
@@ -103,10 +162,14 @@ def _merge_leads(existing: Lead, new: Lead) -> Lead:
         website=best_website,
         type=existing.type or new.type,
         source=existing.source,
-        owner=existing.owner or new.owner,
+        owner=_prefer_owner(existing.owner, new.owner),
+        first_owner=existing.first_owner or new.first_owner,
+        first_owner_name=existing.first_owner_name or new.first_owner_name,
         owner_confidence=existing.owner_confidence or new.owner_confidence,
         facebook_url=existing.facebook_url or new.facebook_url,
+        instagram_url=existing.instagram_url or new.instagram_url,
         gym_category=existing.gym_category or new.gym_category,
+        outcome_word=existing.outcome_word or new.outcome_word,
     )
     # Combine sources (e.g., "mindbody, crossfit")
     existing_sources = set(s.strip() for s in existing.source.split(","))
@@ -130,6 +193,27 @@ _CORPORATE_NAMES = [
 ]
 
 
+_NON_FITNESS_TYPES = {
+    "apartment",
+    "apartment building",
+    "furnished apartment building",
+    "holiday apartment rental",
+    "house",
+    "lodging",
+    "hotel",
+    "vacation home rental agency",
+    "real estate rental agency",
+}
+
+_NON_FITNESS_NAME_PATTERNS = [
+    r"\b(?:studio|1br|2br|3br|1bd|2bd|3bd)\b.*\b(?:apartment|apt|rental)\b",
+    r"\b(?:apartment|apt|rental)\b.*\b(?:gym|fitness center|pool)\b",
+    r"\b(?:blueground|landing)\b",
+    r"\b(?:w/?d|wd|concierge|rooftop|metro|bethesda row)\b.*\b(?:gym|pool)\b",
+    r"\b(?:one|two|three)-bedroom apartment\b",
+]
+
+
 def _is_corporate(name: str) -> bool:
     """Check if a gym name matches a corporate/franchise chain."""
     import unicodedata
@@ -140,6 +224,30 @@ def _is_corporate(name: str) -> bool:
         if corp in n or n in corp:
             return True
     return False
+
+
+def _is_non_fitness_lead(lead: Lead) -> bool:
+    """Reject obvious non-fitness facilities that match broad gym searches."""
+    lead_type = re.sub(r"\s+", " ", (lead.type or "").lower().strip())
+    if lead_type in _NON_FITNESS_TYPES:
+        return True
+
+    name = re.sub(r"\s+", " ", (lead.name or "").lower().strip())
+    return any(re.search(pattern, name, flags=re.IGNORECASE) for pattern in _NON_FITNESS_NAME_PATTERNS)
+
+
+def filter_non_fitness(leads: list[Lead]) -> list[Lead]:
+    """Remove apartments, hotels, and rentals that mention gym as an amenity."""
+    kept = []
+    removed = 0
+    for lead in leads:
+        if _is_non_fitness_lead(lead):
+            removed += 1
+        else:
+            kept.append(lead)
+    if removed:
+        print(f"  [filter] Removed {removed} non-fitness/rental leads")
+    return kept
 
 
 def filter_corporate(leads: list[Lead]) -> list[Lead]:
@@ -187,6 +295,36 @@ def deduplicate(leads: list[Lead], threshold: float = 0.85) -> list[Lead]:
                 unique[i] = _merge_leads(existing, lead)
                 matched = True
                 break
+
+        if not matched:
+            unique.append(lead)
+
+    return unique
+
+
+def deduplicate_by_owner(leads: list[Lead]) -> list[Lead]:
+    """Remove duplicate leads that share any exact owner full name.
+
+    Owner fields can contain a single owner or a pair/list. A row with
+    "Jason Corbitt, Patrick Bresley" duplicates another row with either
+    "Jason Corbitt" or "Patrick Bresley".
+    """
+    if not leads:
+        return []
+
+    unique: list[Lead] = []
+
+    for lead in leads:
+        lead_owners = _owner_name_set(lead.owner)
+        matched = False
+
+        if lead_owners:
+            for i, existing in enumerate(unique):
+                existing_owners = _owner_name_set(existing.owner)
+                if lead_owners & existing_owners:
+                    unique[i] = _merge_leads(existing, lead)
+                    matched = True
+                    break
 
         if not matched:
             unique.append(lead)

@@ -13,6 +13,7 @@ from playwright.sync_api import sync_playwright, Page, BrowserContext
 @dataclass
 class Lead:
     name: str = ""
+    first_company_name: str = ""
     address: str = ""
     city: str = ""
     state: str = ""
@@ -22,17 +23,21 @@ class Lead:
     type: str = ""
     source: str = ""
     owner: str = ""
+    first_owner: str = ""
+    first_owner_name: str = ""
     owner_confidence: str = ""
     facebook_url: str = ""
     instagram_url: str = ""
     gym_category: str = ""
+    outcome_word: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-CSV_COLUMNS = ["name", "address", "city", "state", "phone", "email", "website", "type", "source",
-               "owner", "owner_confidence", "facebook_url", "instagram_url", "gym_category"]
+CSV_COLUMNS = ["name", "first_company_name", "address", "city", "state", "phone", "email",
+               "website", "type", "source", "owner", "first_owner", "first_owner_name", "owner_confidence",
+               "facebook_url", "instagram_url", "gym_category", "outcome_word"]
 
 
 def normalize_phone(raw: str) -> str:

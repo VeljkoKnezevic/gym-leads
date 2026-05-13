@@ -28,6 +28,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from scrapers.base import Lead, CSV_COLUMNS
 from utils.csv_writer import read_leads_csv, write_leads_csv
+from utils.dedup import deduplicate_by_owner
 from utils.website_fetcher import fetch_website_text
 from utils.ollama_client import find_owner
 from utils.name_validator import validate_owner_name
@@ -165,6 +166,8 @@ def main() -> None:
                         help="Minimum confidence to accept a name (default: 0.4)")
     parser.add_argument("--cache-dir", default=DEFAULT_CACHE_DIR,
                         help=f"Website cache directory (default: {DEFAULT_CACHE_DIR})")
+    parser.add_argument("--skip-owner-dedupe", action="store_true",
+                        help="Skip final dedupe by owner name")
     args = parser.parse_args()
 
     output_path = args.output or args.input
@@ -197,7 +200,7 @@ def main() -> None:
                             args.host, args.confidence_threshold, args.cache_dir): lead
             for lead in to_enrich
         }
-        for future in as_completed(futures):
+        for i, future in enumerate(as_completed(futures), 1):
             lead = futures[future]
             try:
                 updated = future.result()
@@ -211,6 +214,20 @@ def main() -> None:
                 source_stats[lead.source] += 1
             else:
                 unknown_count += 1
+
+            write_leads_csv(leads, output_path)
+            print(
+                f"[enrich] Progress: {i}/{len(to_enrich)} processed, "
+                f"{enriched_count} found, {unknown_count} unknown",
+                flush=True,
+            )
+
+    if not args.skip_owner_dedupe:
+        before_owner_dedupe = len(leads)
+        leads = deduplicate_by_owner(leads)
+        removed_by_owner = before_owner_dedupe - len(leads)
+        if removed_by_owner:
+            print(f"[enrich] Owner dedupe removed {removed_by_owner} duplicate leads")
 
     write_leads_csv(leads, output_path)
 

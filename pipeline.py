@@ -1,11 +1,11 @@
-"""Full gym lead pipeline: scrape → prefetch → enrich → categorize → reviews.
+"""Full gym lead pipeline: scrape → prefetch → enrich → categorize.
 
 Uses gemma3:27b for structured extraction (owner names) and
-qwen3:14b for creative tasks (gym category, review snippets).
+qwen3:14b for creative tasks (gym category).
 
 Usage:
     python pipeline.py --city "Danbury, CT"
-    python pipeline.py --city "Danbury, CT" --skip-enrich --skip-reviews
+    python pipeline.py --city "Danbury, CT" --skip-enrich
     python pipeline.py --city "Danbury, CT" --workers 6
 """
 
@@ -44,8 +44,9 @@ def main() -> None:
     parser.add_argument("--city", required=True, help='e.g. "Danbury, CT"')
     parser.add_argument(
         "--sources", nargs="+",
-        choices=["mindbody", "crossfit", "google_maps", "hyrox"],
-        help="Scrapers to run (default: all)",
+        choices=["google_maps"],
+        default=["google_maps"],
+        help="Scrapers to run (default: google_maps)",
     )
     parser.add_argument("--workers", type=int, default=4,
                         help="Workers for prefetch (default: 4)")
@@ -54,7 +55,7 @@ def main() -> None:
     parser.add_argument("--enrich-model", default="qwen3:14b",
                         help="Ollama model for owner extraction (default: qwen3:14b)")
     parser.add_argument("--creative-model", default="qwen3:14b",
-                        help="Ollama model for categorize + reviews (default: qwen3:14b)")
+                        help="Ollama model for categorize step (default: qwen3:14b)")
     parser.add_argument("--skip-scrape", action="store_true",
                         help="Skip scrape step (use existing leads file)")
     parser.add_argument("--skip-prefetch", action="store_true",
@@ -63,10 +64,8 @@ def main() -> None:
                         help="Skip enrich step")
     parser.add_argument("--skip-categorize", action="store_true",
                         help="Skip categorize step")
-    # Reviews stage disabled — kept for re-enable:
-    # parser.add_argument("--skip-reviews", action="store_true", help="Skip reviews step")
-    # parser.add_argument("--review-workers", type=int, default=2,
-    #                     help="Workers for reviews step (default: 2)")
+    parser.add_argument("--maps-pages", type=int, default=10,
+                        help="Max Google Maps pages per query during scrape (default: 10)")
     parser.add_argument("--headed", action="store_true",
                         help="Run browsers in headed mode (scrape step)")
     parser.add_argument("--sequential", action="store_true",
@@ -87,7 +86,8 @@ def main() -> None:
 
     # --- Stage 1: Scrape ---
     if not args.skip_scrape:
-        cmd = [py, "scrape.py", "--city", str(args.city), "--output", leads_file]
+        cmd = [py, "scrape.py", "--city", str(args.city), "--output", leads_file,
+               "--maps-pages", str(args.maps_pages)]
         if args.sources:
             cmd += ["--sources"] + args.sources
         if args.headed:
@@ -144,18 +144,8 @@ def main() -> None:
     else:
         print(f"[pipeline] Skipping categorize.")
 
-    # --- Stage 5: Reviews — DISABLED. Strategy changed; Serper budget moved to enrichment.
-    # To re-enable: uncomment below and re-add reviews-related CLI flags + reviews.py run.
-    # if not args.skip_reviews:
-    #     cmd = [py, "reviews.py", "--input", final_file,
-    #            "--workers", str(args.review_workers),
-    #            "--model", args.creative_model]
-    #     rc = run_step("reviews", cmd)
-    #     stages_run.append(("reviews", rc))
-    #     if rc != 0:
-    #         print(f"[pipeline] Reviews failed.")
-    # else:
-    #     print(f"[pipeline] Skipping reviews.")
+    # Reviews stage intentionally disabled. Current workflow stops after
+    # owner enrichment and categorization.
 
     # Clean up intermediate files
     p = Path(leads_file)

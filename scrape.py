@@ -18,19 +18,21 @@ if _env_path.exists():
             os.environ.setdefault(_k.strip(), _v.strip())
 
 from utils.geo import geocode_city, STATE_ABBR
-from utils.dedup import deduplicate, filter_corporate
+from utils.dedup import deduplicate, filter_corporate, filter_non_fitness
 from utils.csv_writer import write_leads_csv
-from scrapers import CrossFitScraper, SerpApiScraper, HyroxScraper, ClassPassScraper
+from scrapers import SerpApiScraper
+# from scrapers import CrossFitScraper, HyroxScraper, ClassPassScraper
 
 SCRAPER_MAP = {
     # "mindbody": MindBodyScraper,  # disabled — returns platform URLs, not real gym sites
-    "crossfit": CrossFitScraper,
+    # "crossfit": CrossFitScraper,
     "google_maps": SerpApiScraper,
-    "hyrox": HyroxScraper,
-    "classpass": ClassPassScraper,
+    # "hyrox": HyroxScraper,
+    # "classpass": ClassPassScraper,
 }
 
-ALL_SOURCES = ["crossfit", "google_maps", "hyrox"]  # classpass excluded (requires US IP)
+ALL_SOURCES = ["google_maps"]
+# ALL_SOURCES = ["crossfit", "google_maps", "hyrox"]  # classpass excluded (requires US IP)
 
 
 def run_scraper(source: str, scraper_cls, geo: dict, headless: bool, enrich: bool = True):
@@ -55,7 +57,7 @@ def main():
         nargs="+",
         choices=ALL_SOURCES,
         default=ALL_SOURCES,
-        help=f"Sources to scrape (default: all). Choices: {', '.join(ALL_SOURCES)}",
+        help=f"Sources to scrape (default: google_maps). Choices: {', '.join(ALL_SOURCES)}",
     )
     parser.add_argument(
         "--output",
@@ -72,7 +74,14 @@ def main():
         action="store_true",
         help="Run scrapers sequentially instead of in parallel (lower memory use)",
     )
+    parser.add_argument(
+        "--maps-pages",
+        type=int,
+        default=10,
+        help="Max Google Maps pages per query (default: 10)",
+    )
     args = parser.parse_args()
+    os.environ["GOOGLE_MAPS_MAX_PAGES"] = str(args.maps_pages)
 
     # Geocode the city
     print(f"Geocoding: {args.city}")
@@ -118,6 +127,9 @@ def main():
 
     # Remove corporate/franchise chains
     unique_leads = filter_corporate(unique_leads)
+
+    # Remove apartments, hotels, and rentals that mention gym as an amenity.
+    unique_leads = filter_non_fitness(unique_leads)
 
     # Filter to target state only (scrapers search by radius and pull in neighboring states)
     target_state_full = geo["state"]  # e.g. "Connecticut"

@@ -28,6 +28,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from scrapers.base import Lead
 from utils.csv_writer import read_leads_csv, write_leads_csv
+from utils.dedup import filter_non_fitness
 from utils.website_fetcher import (
     fetch_website_text,
     fetch_raw_html,
@@ -199,7 +200,7 @@ def main() -> None:
         inp = Path(args.input)
         output_path = str(inp.parent / f"{inp.stem}-prefetched.csv")
 
-    leads = read_leads_csv(args.input)
+    leads = filter_non_fitness(read_leads_csv(args.input))
 
     with_website = sum(1 for l in leads if l.website)
     print(f"[prefetch] {len(leads)} leads — {with_website} with website, "

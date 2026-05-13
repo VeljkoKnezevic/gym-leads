@@ -193,6 +193,12 @@ def main() -> None:
                       f"'{orig_lead.name}': {e}")
                 stats["error"] = stats.get("error", 0) + 1
 
+            write_leads_csv(leads, output_path)
+            print(
+                f"[categorize] Progress saved: {i}/{len(to_process)}",
+                flush=True,
+            )
+
     write_leads_csv(leads, output_path)
 
     total_with_category = sum(1 for l in leads if l.gym_category)

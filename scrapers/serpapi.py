@@ -23,15 +23,32 @@ SERPER_MAPS_URL = "https://google.serper.dev/maps"
 # Focused queries — broad terms catch 80%+ of leads, niches add the rest.
 # 5 queries × up to 3 pages = 15 API calls per city.
 GYM_QUERIES = [
-    "gym near me",
+    "gym",
     "fitness studio",
     "fitness center",
+    "personal training studio",
+    "group fitness",
+    "HIIT studio",
+    "boot camp fitness",
+    "CrossFit gym",
+    "boxing gym",
+    "kickboxing gym",
+    "martial arts gym",
+    "pilates studio",
+    "barre studio",
     "yoga studio",
-    "pilates barre studio",
+    "hot yoga",
+    "spin studio",
+    "cycling studio",
+    "boutique fitness",
+    "strength training gym",
 ]
 
 RESULTS_PER_PAGE = 20
 MAX_PAGES_PER_QUERY = 3  # 3 × 20 = 60 results per query
+
+
+MAX_PAGES_PER_QUERY = int(os.environ.get("GOOGLE_MAPS_MAX_PAGES", "10"))
 
 
 class SerpApiScraper(BaseScraper):
@@ -52,8 +69,12 @@ class SerpApiScraper(BaseScraper):
 
         all_businesses: list[dict] = []
         seen_place_ids: set[str] = set()
+        credits_exhausted = False
 
         for query in GYM_QUERIES:
+            if credits_exhausted:
+                break
+            empty_or_duplicate_pages = 0
             for page_num in range(MAX_PAGES_PER_QUERY):
                 payload = {
                     "q": query,
@@ -73,6 +94,28 @@ class SerpApiScraper(BaseScraper):
                             SERPER_MAPS_URL, json=payload,
                             headers=headers, timeout=30,
                         )
+                        if resp.status_code != 200:
+                            body = resp.text[:500]
+                            print(
+                                f"  [google_maps] '{query}' p{page_num+1} "
+                                f"Serper error {resp.status_code}: {body}"
+                            )
+                            if resp.status_code == 429:
+                                wait = 10 * (attempt + 1)
+                                print(
+                                    f"  [google_maps] Serper rate limited — "
+                                    f"waiting {wait}s"
+                                )
+                                time.sleep(wait)
+                                continue
+                            if (
+                                resp.status_code in (402, 403)
+                                or "credit" in body.lower()
+                                or "balance" in body.lower()
+                            ):
+                                print("  [google_maps] SERPER_CREDITS_EXHAUSTED")
+                                credits_exhausted = True
+                            break
                         data = resp.json()
                         break
                     except Exception as e:
@@ -81,6 +124,8 @@ class SerpApiScraper(BaseScraper):
                         time.sleep(wait)
 
                 if data is None:
+                    if credits_exhausted:
+                        break
                     print(f"  [google_maps] Skipping '{query}' p{page_num+1} after 3 failures")
                     break
 
@@ -103,7 +148,12 @@ class SerpApiScraper(BaseScraper):
                     f"{len(results)} results ({new} new)"
                 )
 
-                if len(results) < RESULTS_PER_PAGE:
+                if new == 0:
+                    empty_or_duplicate_pages += 1
+                else:
+                    empty_or_duplicate_pages = 0
+
+                if len(results) < RESULTS_PER_PAGE or empty_or_duplicate_pages >= 2:
                     break
 
         leads = [self._parse_serper(b) for b in all_businesses]
@@ -135,7 +185,6 @@ class SerpApiScraper(BaseScraper):
         gym_type = b.get("type", "Fitness")
         phone = b.get("phoneNumber", "")
         website = b.get("website", "")
-
         return Lead(
             name=name,
             address=address,
@@ -235,7 +284,6 @@ class SerpApiScraper(BaseScraper):
         gym_type = b.get("type", "Fitness")
         phone = b.get("phone", "")
         website = b.get("website", "")
-
         return Lead(
             name=name,
             address=address,
